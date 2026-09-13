@@ -97,6 +97,8 @@ Optional settings, all in the app itself:
 - **Auto-Capitalize** / **Auto-Period** (both on by default) — capitalize sentence starts; double-tap
   space for a period.
 - **Return key** / **Emoji keyboard** (both on by default) — show or hide those keys.
+- **Key vibration** (on by default) — the short tick under each key press. Android's own touch-vibration
+  setting still sits above this one, so turning it on cannot override a phone with haptics switched off.
 - **Voice dictation** (off by default) — downloads a ~40 MB offline speech-to-text model (Vosk) once,
   then a mic key lets you speak instead of type, on-device. A **Delete model** link appears once
   downloaded, to reclaim the space.

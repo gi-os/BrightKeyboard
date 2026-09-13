@@ -229,6 +229,7 @@ class LightKeyboardView @JvmOverloads constructor(
     private var keyLayout = Prefs.LAYOUT_QWERTY
     private var autoPeriod = true
     private var swipeTyping = true
+    private var haptics = true
     private var suggestionsOn = false
     private val hiddenKeys = HashSet<String>()   // control keys removed by their settings toggles
 
@@ -264,7 +265,7 @@ class LightKeyboardView @JvmOverloads constructor(
             suggestionForgotten = true
             pressedSuggestion = -1
             invalidate()
-            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            if (haptics) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             listener?.onSuggestionForget(item)
         }
     }
@@ -340,6 +341,7 @@ class LightKeyboardView @JvmOverloads constructor(
         keyLayout = Prefs.keyLayout(context)
         autoPeriod = Prefs.autoPeriod(context)
         swipeTyping = Prefs.swipeTyping(context)
+        haptics = Prefs.haptics(context)
         hiddenKeys.clear()
         if (!Prefs.voiceEnabled(context)) hiddenKeys.add(Key.MIC)
         // The globe appears only when there is somewhere to go. Asked of the system rather than
@@ -1378,7 +1380,16 @@ class LightKeyboardView @JvmOverloads constructor(
         }
     }
 
-    private fun tap() = performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    /**
+     * The tick under a key press.
+     *
+     * Cached from prefs on reset() rather than read here: this runs on every touch-down, including
+     * mid-swipe, and a SharedPreferences read per keystroke is the kind of thing that shows up as
+     * typing feeling heavy on a phone this size.
+     */
+    private fun tap() {
+        if (haptics) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
 
     /** How far the finger must travel before a drag is considered a word trace. */
     private val traceStartDist = dpf(22)

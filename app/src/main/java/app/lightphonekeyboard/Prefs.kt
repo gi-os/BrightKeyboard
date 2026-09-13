@@ -23,6 +23,7 @@ object Prefs {
     private const val KEY_STRENGTH = "correction_strength"
     private const val KEY_DELETE_ACTION = "delete_action"
     private const val KEY_T9_MODE = "t9_mode"
+    private const val KEY_HAPTICS = "haptics"
 
     /** Keyboard letter arrangements; the stored value of [keyLayout]. */
     const val LAYOUT_QWERTY = "qwerty"
@@ -156,6 +157,19 @@ object Prefs {
 
     fun setReturnKey(c: Context, value: Boolean) =
         prefs(c).edit().putBoolean(KEY_RETURN_KEY, value).apply()
+
+    /**
+     * A short vibration under each key press. On by default, because that is what the LightOS
+     * keyboard does and this one is a clone of it.
+     *
+     * The keyboard asks for the feedback; whether anything is felt is still the phone's decision.
+     * Android's own "touch vibration" system setting sits above this one, so turning this on cannot
+     * override a user who has switched haptics off for the whole device.
+     */
+    fun haptics(c: Context): Boolean = prefs(c).getBoolean(KEY_HAPTICS, true)
+
+    fun setHaptics(c: Context, value: Boolean) =
+        prefs(c).edit().putBoolean(KEY_HAPTICS, value).apply()
 
     /** Show the emoji key (access to the emoji panel). On by default. */
     fun emojiKey(c: Context): Boolean = prefs(c).getBoolean(KEY_EMOJI_KEY, true)
