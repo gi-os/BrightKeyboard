@@ -1,6 +1,7 @@
 package app.lightphonekeyboard
 
 import android.content.Context
+import app.lightphonekeyboard.text.Alternatives
 
 /** Tiny SharedPreferences wrapper. Single-process app, so the Activity's writes are seen by the IME. */
 object Prefs {
@@ -19,16 +20,49 @@ object Prefs {
     private const val KEY_TOUCH_OFFSETS = "touch_offsets"
     private const val KEY_LAYOUT = "key_layout"
     private const val KEY_HEIGHT = "key_height"
+    private const val KEY_STRENGTH = "correction_strength"
+    private const val KEY_DELETE_ACTION = "delete_action"
+    private const val KEY_T9_MODE = "t9_mode"
 
     /** Keyboard letter arrangements; the stored value of [keyLayout]. */
     const val LAYOUT_QWERTY = "qwerty"
     const val LAYOUT_AZERTY = "azerty"
     const val LAYOUT_QWERTZ = "qwertz"
 
+    /**
+     * The twelve-key phone pad: three letters to a key, one tap per letter, and the dictionary works
+     * out the word. See [app.lightphonekeyboard.text.T9].
+     *
+     * It belongs in the layout list rather than in a mode of its own because that is what it is — a
+     * different arrangement of the same letters. Everything else about the keyboard is unchanged:
+     * the same dictionary, the same personal word list, the same delete key walking the same
+     * alternatives.
+     */
+    const val LAYOUT_T9 = "t9"
+
+    /** How the keypad reads taps; the stored value of [t9Mode]. */
+    const val T9_PREDICTIVE = "predictive"
+    const val T9_MULTITAP = "multitap"
+
     /** Keyboard height presets; the stored value of [keyHeight]. */
     const val HEIGHT_SHORT = "short"
     const val HEIGHT_MEDIUM = "medium"
     const val HEIGHT_TALL = "tall"
+
+    /**
+     * Delete-key behaviour straight after a correction or a swipe; the stored value of [deleteAction].
+     *
+     * [DELETE_CYCLE] is this keyboard's own idea and the default: rather than a suggestion strip, the
+     * delete key walks the other readings of the word — press it once for the next-best guess, again
+     * for the one after, and the last stop is always exactly what you typed. It puts the alternatives
+     * under a key your thumb is already on and costs no screen space, which matters on a phone whose
+     * whole point is a small, quiet interface.
+     *
+     * [DELETE_REVERT] is for people who find that surprising: one press puts back what you typed, and
+     * that is the end of it. A second press deletes a character like any other keyboard.
+     */
+    const val DELETE_CYCLE = "cycle"
+    const val DELETE_REVERT = "revert"
 
     private fun prefs(c: Context) = c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -37,6 +71,34 @@ object Prefs {
 
     fun setAutocorrect(c: Context, value: Boolean) =
         prefs(c).edit().putBoolean(KEY_AUTOCORRECT, value).apply()
+
+    /**
+     * How willing autocorrect is to replace a word without being asked — Cautious, Balanced or Eager.
+     *
+     * This changes only what gets *committed*. Every candidate every engine found is still in the list
+     * the delete key walks, at every setting, so turning it down makes the keyboard quieter rather than
+     * less capable. See [app.lightphonekeyboard.text.Alternatives.Strength].
+     */
+    fun correctionStrength(c: Context): Alternatives.Strength {
+        val stored = prefs(c).getString(KEY_STRENGTH, null) ?: return Alternatives.Strength.BALANCED
+        return try {
+            Alternatives.Strength.valueOf(stored)
+        } catch (e: IllegalArgumentException) {
+            // A value written by a newer build, or a renamed constant. Never let a stored string
+            // crash the keyboard — that means no keyboard at all, in every app on the phone.
+            Alternatives.Strength.BALANCED
+        }
+    }
+
+    fun setCorrectionStrength(c: Context, value: Alternatives.Strength) =
+        prefs(c).edit().putString(KEY_STRENGTH, value.name).apply()
+
+    /** What the delete key does straight after a correction: [DELETE_CYCLE] or [DELETE_REVERT]. */
+    fun deleteAction(c: Context): String =
+        prefs(c).getString(KEY_DELETE_ACTION, DELETE_CYCLE) ?: DELETE_CYCLE
+
+    fun setDeleteAction(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_DELETE_ACTION, value).apply()
 
     /**
      * The three-slot suggestion strip above the keys. OFF by default: this keyboard is a clone of the
@@ -107,12 +169,26 @@ object Prefs {
     fun setTouchOffsets(c: Context, value: String) =
         prefs(c).edit().putString(KEY_TOUCH_OFFSETS, value).apply()
 
-    /** Letter arrangement: one of [LAYOUT_QWERTY] / [LAYOUT_AZERTY] / [LAYOUT_QWERTZ]. */
+    /** Letter arrangement: [LAYOUT_QWERTY], [LAYOUT_AZERTY], [LAYOUT_QWERTZ] or [LAYOUT_T9]. */
     fun keyLayout(c: Context): String =
         prefs(c).getString(KEY_LAYOUT, LAYOUT_QWERTY) ?: LAYOUT_QWERTY
 
     fun setKeyLayout(c: Context, value: String) =
         prefs(c).edit().putString(KEY_LAYOUT, value).apply()
+
+    /** True when the keypad is the chosen layout. */
+    fun isKeypad(c: Context): Boolean = keyLayout(c) == LAYOUT_T9
+
+    /**
+     * How the keypad reads taps: [T9_PREDICTIVE] (one tap per letter, the dictionary disambiguates) or
+     * [T9_MULTITAP] (press 2 three times for `c`, no prediction at all). Predictive by default, because
+     * it is faster and because multi-tap is here for people who specifically want it.
+     */
+    fun t9Mode(c: Context): String =
+        prefs(c).getString(KEY_T9_MODE, T9_PREDICTIVE) ?: T9_PREDICTIVE
+
+    fun setT9Mode(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_T9_MODE, value).apply()
 
     /** Voice dictation (mic key + offline STT). Off by default; turning it on downloads the model. */
     fun voiceEnabled(c: Context): Boolean = prefs(c).getBoolean(KEY_VOICE, false)

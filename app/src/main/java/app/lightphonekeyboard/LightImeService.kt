@@ -8,14 +8,17 @@ import android.text.InputType
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
 import android.view.textservice.SentenceSuggestionsInfo
 import android.view.textservice.SpellCheckerSession
 import android.view.textservice.SpellCheckerSession.SpellCheckerSessionListener
 import android.view.textservice.SuggestionsInfo
 import android.view.textservice.TextInfo
 import android.view.textservice.TextServicesManager
+import app.lightphonekeyboard.text.Alternatives
 import app.lightphonekeyboard.text.ContextRanker
 import app.lightphonekeyboard.text.KeyGrid
+import app.lightphonekeyboard.text.Keypad
 import app.lightphonekeyboard.text.StripItem
 import app.lightphonekeyboard.text.Suggester
 import app.lightphonekeyboard.text.WordContext
@@ -28,18 +31,23 @@ import java.util.Locale
  * Two optional layers sit on top, both toggled in [SetupActivity] and both driven by the bundled word
  * list in [TextEngine]:
  *
- *  - **Autocorrect.** When a tapped word is finished (space / punctuation / enter) it is looked up in
- *    the dictionary, and if it isn't a word the nearest plausible one replaces it — see
- *    [app.lightphonekeyboard.text.Corrector] for how "nearest" is judged. Case is preserved, and the
- *    first backspace afterwards reverts the change. This used to ask the phone's own
- *    [SpellCheckerSession] instead, which LightOS does not ship, so it silently corrected nothing;
+ *  - **Autocorrect.** When a tapped word is finished (space / punctuation / enter) it is put to every
+ *    engine at once — a keyboard-aware edit distance, a sound-alike index, a missed-space search and a
+ *    table of English facts — and [app.lightphonekeyboard.text.Alternatives] merges their answers and
+ *    decides whether any of them is good enough to commit. Case is preserved. This used to ask the
+ *    phone's own [SpellCheckerSession], which LightOS does not ship, so it silently corrected nothing;
  *    that path is still here as a fallback for the case where the bundled dictionary won't load.
  *  - **Swipe typing.** A traced path arrives as [onGesture], is decoded to a word, and is committed
- *    with a trailing space. Backspace immediately afterwards cycles through the runner-up readings of
- *    the same trace instead of deleting — which is how the keyboard offers alternatives without a
- *    suggestion bar, keeping the LightOS look untouched.
+ *    with a trailing space.
  *
- * All three of those rank candidates against the word before the cursor as well as the one being typed
+ * Both of them leave the **alternatives window** open afterwards, and that is this keyboard's own idea:
+ * instead of a suggestion strip, the delete key walks the other readings of the word the keyboard just
+ * changed, ending at exactly what the user typed. It costs no screen space and puts the alternatives
+ * under a key the thumb is already on, which is what lets the LightOS look stay untouched. See
+ * [onBackspace] and [Prefs.DELETE_CYCLE] — a user who finds it surprising can set the delete key to go
+ * straight back to their own spelling instead.
+ *
+ * All of those rank candidates against the word before the cursor as well as the one being typed
  * (see [WordContext] and [app.lightphonekeyboard.text.ContextRanker]). This service is the only part of
  * the app that can see the field, so it is where the sentence is read: [contextOf] works out the
  * preceding word and whether a capital was the user's doing or the keyboard's, once per keystroke, from
@@ -54,12 +62,30 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     /** The bundled dictionary plus the corrector and swipe decoder built on it. Loads off-thread. */
     private val engine by lazy { TextEngine(this) }
 
-    // Swipe typing: what the last gesture committed, and the runner-up words it could also have been.
-    // While these are set, backspace cycles the alternatives rather than deleting (see [cycleGesture]).
-    private var gestureAlternates: List<String>? = null
-    private var gestureIndex = 0
-    private var gestureCommitted: String? = null
-    private var gestureCapitalized = false
+    // The alternatives window.
+    //
+    // Whenever the keyboard puts a word into the field that the user did not type character for
+    // character — a tapped word that autocorrect replaced, or a swipe it decoded — it remembers every
+    // other reading it had for that word, best first, with what the user actually typed last. While
+    // the window is open, backspace walks that list instead of deleting a character.
+    //
+    // This used to exist only for swipes. Corrections had a separate one-step undo, which meant the
+    // keyboard could tell you its second-best guess for a word you traced and not for a word you
+    // typed — for no reason other than that the two paths were written at different times. One list
+    // for both is the whole of [Prefs.DELETE_CYCLE].
+    private var altWords: List<String>? = null
+    private var altIndex = 0
+
+    /** The exact text now in the field, so the window can be abandoned if anything else changed it. */
+    private var altCommitted: String? = null
+
+    /** How a word from [altWords] is dressed for insertion: what goes before it and after it. */
+    private var altLead = ""
+    private var altSuffix = ""
+
+    /** The word as typed, for case matching. Empty for a swipe, which has [altCapitalized] instead. */
+    private var altOriginal = ""
+    private var altCapitalized = false
 
     private var spell: SpellCheckerSession? = null
     private val corrections = HashMap<String, String?>()   // word -> fix (null = checked, no fix)
@@ -108,15 +134,25 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         }
         micActive = false
         dictation.destroy()
-        corrections.clear()
-        pending.clear()
-        clearUndo()
-        clearGesture()
+        // Only for a genuinely new field, for the same reason the surface reset above is. Many apps
+        // call restartInput() after every committed character, and a keypad word or an alternatives
+        // window lives across many keystrokes — clearing them here made both features silently dead
+        // in exactly those apps. The text-at-cursor check every rewrite path performs is what keeps
+        // stale state harmless, so there is nothing to gain by dropping it eagerly.
+        if (!restarting) {
+            corrections.clear()
+            pending.clear()
+            clearUndo()
+            clearAlternatives()
+            resetPadWord()
+            settleMultiTap()
+        }
         if (spell == null) initSpell()
         // The settings screen is a separate Activity in the same process, so a word added there only
         // reaches the running keyboard when it next opens.
         engine.reloadUserWords()
         engine.reloadForgottenWords()
+        engine.ensureKeypad()   // the layout may have been switched to the keypad since last time
         updateShift()
         refreshSuggestions()
     }
@@ -157,9 +193,14 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
 
     override fun onText(s: String) {
         val ic = currentInputConnection ?: return
+        // A character arriving from anywhere else — the symbols layer, an emoji, dictation — settles
+        // whatever the pad was in the middle of. The word in the field is already correct; it just
+        // stops being editable by further taps.
+        if (padOpen) resetPadWord()
+        settleMultiTap()
         lateWord = null                    // any new input invalidates a pending late-correction
         lateTerminator = null
-        clearGesture()                     // typing anything ends the swipe-alternatives window
+        clearAlternatives()                // typing anything closes the alternatives window
         if (s.length == 1 && isWordChar(s[0])) {
             clearUndo()
             ic.commitText(s, 1)
@@ -177,7 +218,11 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         // is rewritten, so the preceding word is the one the user actually typed after.
         val before = textBeforeCursor(CONTEXT_LOOKBACK)
         val original = if (autocorrectOn()) trailingWordOf(before) else ""
-        val fix = fixFor(original, contextOf(before, original))
+        val ctx = contextOf(before, original)
+        // One gather, used twice: it decides the correction *and* becomes the list the delete key
+        // walks. Asking the engines again for the alternatives would risk the two disagreeing.
+        val readings = if (original.isEmpty()) emptyList() else engine.alternativesFor(original, ctx)
+        val fix = fixFor(original, ctx, readings)
         if (fix != null && !fix.equals(original, ignoreCase = true)) {
             val cased = applyCase(original, fix)
             ic.beginBatchEdit()
@@ -187,6 +232,16 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             ic.endBatchEdit()
             undoFrom = cased + s     // arm revert: text now ends with the fix + terminator
             undoTo = original + s
+            // ...and arm the full window, so delete offers the runner-up readings on the way back to
+            // the user's spelling rather than only the spelling itself.
+            armAlternatives(
+                words = readingsFrom(readings, fix, original),
+                committed = cased + s,
+                lead = "",
+                suffix = s,
+                original = original,
+                capitalized = false,
+            )
         } else {
             clearUndo()
             ic.commitText(s, 1)
@@ -203,9 +258,43 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         }
     }
 
+    /**
+     * Backspace. Three things it can mean, in order.
+     *
+     * Straight after the keyboard changed a word, the alternatives window is open and this key walks
+     * the other readings — or, on [Prefs.DELETE_REVERT], jumps straight to the last one. Both routes
+     * end at the user's own spelling; the setting only decides whether the stops in between are
+     * offered. Once the window is closed, or if it was never opened, it deletes.
+     *
+     * A swipe is the exception to the setting: a traced word has no "as typed" spelling to revert to,
+     * so cycling is the only way to reach the other readings of the trace and it stays available at
+     * both settings. Turning the setting to Revert makes the keyboard stop second-guessing what you
+     * *typed*; it would not make sense for it to also throw away the alternatives for what you drew.
+     */
     override fun onBackspace() {
         val ic = currentInputConnection ?: return
-        if (cycleGesture(ic)) return
+        // Mid-word on the keypad, backspace takes back a *tap*, not a character. The word in the field
+        // is a reading of the digits so far, so deleting one of its letters would leave text that is
+        // no longer a reading of anything — the next tap would then replace the wrong number of
+        // characters. Dropping the last digit and re-reading is the only coherent thing here.
+        settleMultiTap()
+        if (padOpen) {
+            if (padDigits.isNotEmpty()) padDigits.setLength(padDigits.length - 1)
+            if (padDigits.isEmpty()) {
+                clearPadWord(ic)
+            } else {
+                showPadReading(ic)
+            }
+            return
+        }
+        if (altWords != null) {
+            val cycling = Prefs.deleteAction(this) == Prefs.DELETE_CYCLE || altOriginal.isEmpty()
+            if (cycling) {
+                if (cycleAlternatives(ic)) return
+            } else {
+                if (revertToLiteral(ic)) return
+            }
+        }
         val from = undoFrom
         val to = undoTo
         if (from != null && to != null) {
@@ -227,10 +316,312 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         ic.deleteSurroundingText(lastGraphemeLength(before), 0)
     }
 
+    // ------------------------------------------------------------------ the twelve-key pad
+    //
+    // A keypad word is not finished until it is finished. Unlike the letter keyboard, where each tap
+    // commits a character and autocorrect gets its turn at the end, a pad tap only narrows the field:
+    // 4-6-6-3 is `good`, `home`, `gone` and `hood` right up until the word is terminated. So the IME
+    // holds the digits, shows its current best reading in the field as it goes, and replaces it in
+    // place on every tap.
+    //
+    // The reading sits in the field rather than in a strip for the same reason the delete key cycles
+    // rather than a bar of suggestions appearing: this keyboard has no chrome, and a word you can read
+    // in the sentence you are writing is easier to judge than one in a list above it.
+
+    /** The digits tapped so far for the word in progress. Empty when no keypad word is open. */
+    private var padDigits = StringBuilder()
+
+    /** The reading currently sitting in the field, so the next tap can replace exactly that text. */
+    private var padShown = ""
+
+    /**
+     * True while a keypad word is open — meaning there is state that other input has to settle.
+     *
+     * Both halves matter, and testing only [padDigits] was a bug: a trace that starts and then goes
+     * nowhere takes its digit back, leaving a reading in the field with no digits behind it. Every
+     * "is the pad busy?" guard then read false while a live word was still on screen, and the next
+     * pad tap deleted the wrong text.
+     */
+    private val padOpen: Boolean get() = padDigits.isNotEmpty() || padShown.isNotEmpty()
+
+    /** Shift state when the word was started — a pad word is committed long after its first key. */
+    private var padCapitalized = false
+
+    /** Multi-tap: the key being cycled and how many times, or -1 when no key is mid-cycle. */
+    private var multiTapDigit = -1
+    private var multiTapIndex = 0
+    private var multiTapAtMs = 0L
+
+    /**
+     * The exact character multi-tap last committed, so cycling only ever replaces its own letter.
+     *
+     * Without this, "press 2, press backspace, press 2 again inside the timeout" deletes a character
+     * of the text *before* the word and writes `b` over it — the cycle had no idea its own letter was
+     * already gone. Comparing against what is actually at the cursor is the same rule every other
+     * rewrite path here follows.
+     */
+    private var multiTapChar = ""
+
+    override fun onKeypad(digit: Int, shifted: Boolean) {
+        if (digit !in 0..9) return    // an id that didn't parse; appending it would poison the word
+        val ic = currentInputConnection ?: return
+        clearAlternatives()
+        clearUndo()
+        if (Prefs.t9Mode(this) == Prefs.T9_MULTITAP) { multiTap(ic, digit, shifted); return }
+
+        when (digit) {
+            // 0 is the space bar, and a space is what finishes a keypad word. Note the space is
+            // committed *by* finishPadWord rather than through onText: onText closes the alternatives
+            // window, which is the very thing finishing a pad word needs to open.
+            0 -> finishPadWord(ic, " ")
+            // 1 cycles the punctuation, and settles the word on the way — the same way a full stop
+            // does on the letter keyboard.
+            1 -> finishPadWord(ic, nextPunctuation(ic))
+            else -> {
+                if (padDigits.isEmpty()) padCapitalized = shifted
+                padDigits.append('0' + digit)
+                showPadReading(ic)
+            }
+        }
+    }
+
+    override fun onKeypadTraceStart() {
+        // The key the finger went down on already added its digit; a trace supplies the whole
+        // sequence, so take that one back before the traced digits arrive. Remembered rather than
+        // discarded, because a trace that comes to nothing has to give it back — see
+        // [onKeypadTraceCancel].
+        if (padDigits.isEmpty()) { padTraceTaken = -1; return }
+        padTraceTaken = padDigits.last() - '0'
+        padDigits.setLength(padDigits.length - 1)
+    }
+
+    override fun onKeypadTraceCancel() {
+        val ic = currentInputConnection ?: return
+        val taken = padTraceTaken
+        padTraceTaken = -1
+        if (taken < 0) return
+        padDigits.append('0' + taken)
+        showPadReading(ic)
+    }
+
+    /** The digit a pad trace took back when it started, so a trace that fails can restore it. */
+    private var padTraceTaken = -1
+
+    override fun onKeypadGesture(digits: String) {
+        val ic = currentInputConnection ?: return
+        padTraceTaken = -1
+        val decoder = engine.t9 ?: return
+        val ctx = contextOf(textBeforeCursor(CONTEXT_LOOKBACK), padShown)
+        val readings = decoder.decode(digits, GESTURE_ALTERNATES, ctx, traced = true)
+        if (readings.isEmpty()) { onKeypadTraceCancel(); return }
+        clearUndo()
+        // A traced word arrives whole, the way a swiped one does on the letter keyboard, so it is
+        // committed the same way — with its trailing space and its alternatives window open.
+        clearPadWord(ic)
+        val words = readings.map { it.word }
+        val lead = if (needsLeadingSpace()) " " else ""
+        altLead = lead
+        altSuffix = " "
+        altOriginal = ""
+        altCapitalized = keyboard?.isShifted == true
+        val text = alternativeText(words[0])
+        ic.commitText(text, 1)
+        armAlternatives(words, text, lead, " ", "", altCapitalized)
+        refreshSuggestions()
+    }
+
+    /**
+     * Put the current best reading of [padDigits] into the field, replacing whatever the last tap left
+     * there.
+     *
+     * When nothing matches, the digits are shown as the letters of each key's first letter would not
+     * help anyone — instead the previous reading is kept and the tap is simply absorbed. That is the
+     * behaviour of every phone that ever shipped T9: a sequence with no word behind it is a sequence
+     * you are still in the middle of typing.
+     */
+    private fun showPadReading(ic: InputConnection) {
+        // Never delete text without first checking it is the text we put there.
+        //
+        // This is the one rewrite path in the IME that used to skip that check, and it is the path
+        // that runs on every single keypad tap. Anything that moves the caret or edits the field
+        // behind our back — the user tapping elsewhere in the same field, voice dictation inserting a
+        // sentence, an app reformatting a phone number as it is typed — leaves [padShown] describing
+        // text that is no longer at the cursor, and the next tap then deletes that many characters of
+        // whatever *is*. Silent, and it eats the user's words.
+        if (padShown.isNotEmpty() &&
+            ic.getTextBeforeCursor(padShown.length, 0)?.toString() != padShown
+        ) {
+            // Something else owns the text at the cursor now. Abandon the word rather than fight for
+            // it: the taps so far described a word that is no longer there to replace.
+            resetPadWord()
+            return
+        }
+        val decoder = engine.t9
+        val digits = padDigits.toString()
+        val ctx = contextOf(textBeforeCursor(CONTEXT_LOOKBACK), padShown)
+        val readings = decoder?.decode(digits, PAD_READINGS, ctx)
+        val best = readings?.firstOrNull()?.word
+        if (best == null) {
+            // No word behind these taps yet. Leave what is showing and keep the digits: the next tap
+            // may well resolve them, which is how every phone that ever shipped T9 behaved.
+            return
+        }
+        val cased = if (padCapitalized) best.replaceFirstChar { it.uppercaseChar() } else best
+        ic.beginBatchEdit()
+        if (padShown.isNotEmpty()) ic.deleteSurroundingText(padShown.length, 0)
+        ic.commitText(cased, 1)
+        ic.endBatchEdit()
+        padShown = cased
+        padReadings = readings.map { it.word }
+        refreshSuggestions()
+    }
+
+    /** The readings of the open keypad word, for the strip and for the delete key. */
+    private var padReadings: List<String> = emptyList()
+
+    /**
+     * Finish the word in progress and open the alternatives window on it, so the delete key can walk
+     * the other readings — which on a keypad is the difference between usable and infuriating. Every
+     * pad word is ambiguous by construction, and being able to say "no, the next one" without
+     * retyping is the whole of what made T9 work.
+     */
+    private fun finishPadWord(ic: InputConnection, terminator: String) {
+        if (padShown.isEmpty()) {
+            resetPadWord()
+            if (terminator.isNotEmpty()) ic.commitText(terminator, 1)
+            return
+        }
+        val readings = padReadings
+        val committed = padShown + terminator
+        val capitalized = padCapitalized
+        resetPadWord()
+        if (terminator.isNotEmpty()) ic.commitText(terminator, 1)
+        if (readings.size > 1) {
+            altLead = ""
+            altSuffix = terminator
+            altOriginal = ""
+            altCapitalized = capitalized
+            armAlternatives(readings, committed, "", terminator, "", capitalized)
+        }
+        refreshSuggestions()
+    }
+
+    /** Take the open word out of the field entirely — used when a trace replaces it. */
+    private fun clearPadWord(ic: InputConnection) {
+        if (padShown.isNotEmpty() &&
+            ic.getTextBeforeCursor(padShown.length, 0)?.toString() == padShown
+        ) {
+            ic.deleteSurroundingText(padShown.length, 0)
+        }
+        resetPadWord()
+    }
+
+    private fun resetPadWord() {
+        padDigits.setLength(0)
+        padShown = ""
+        padReadings = emptyList()
+        padCapitalized = false
+        padTraceTaken = -1
+        multiTapDigit = -1
+        multiTapIndex = 0
+        multiTapChar = ""
+    }
+
+    /**
+     * End any multi-tap cycle in progress. Anything at all happening to the field other than the same
+     * key again means the letter is settled — a backspace, a character from another layer, a cursor
+     * move, dictation. [resetPadWord] does this too, but it is only reached from the predictive path,
+     * and multi-tap never populates [padDigits] for it to notice.
+     */
+    private fun settleMultiTap() {
+        multiTapDigit = -1
+        multiTapIndex = 0
+        multiTapChar = ""
+    }
+
+    /**
+     * Multi-tap: press 2 once for `a`, twice for `b`, three times for `c`.
+     *
+     * No dictionary, no prediction, no guessing — which is exactly why it is offered. Some people want
+     * a keyboard that types the letter they pressed and nothing else, and on a pad that means this.
+     *
+     * A different key, or [MULTITAP_TIMEOUT_MS] of nothing, settles the letter and starts the next one.
+     * The timeout is not a timer: the next press compares the clock itself, so nothing has to be
+     * scheduled, cancelled or cleaned up when the field goes away mid-word.
+     */
+    private fun multiTap(ic: InputConnection, digit: Int, shifted: Boolean) {
+        val now = System.currentTimeMillis()
+        if (digit == 0) { settleMultiTap(); onText(" "); return }
+        if (digit == 1) { settleMultiTap(); ic.commitText(nextPunctuation(ic), 1); return }
+        val letters = Keypad.LETTERS.getOrNull(digit).orEmpty()
+        if (letters.isEmpty()) return
+
+        val continuing = digit == multiTapDigit && now - multiTapAtMs < MULTITAP_TIMEOUT_MS &&
+            multiTapChar.isNotEmpty()
+        multiTapIndex = if (continuing) (multiTapIndex + 1) % letters.length else 0
+        multiTapDigit = digit
+        multiTapAtMs = now
+
+        val c = letters[multiTapIndex]
+        val out = (if (shifted) c.uppercaseChar() else c).toString()
+        // Only take back our own letter, and only if it is still the thing at the cursor.
+        val replacing = continuing && multiTapChar.isNotEmpty() &&
+            ic.getTextBeforeCursor(multiTapChar.length, 0)?.toString() == multiTapChar
+        ic.beginBatchEdit()
+        if (replacing) ic.deleteSurroundingText(multiTapChar.length, 0)
+        ic.commitText(out, 1)
+        ic.endBatchEdit()
+        multiTapChar = out
+    }
+
+    /**
+     * The 1 key: which punctuation mark it should produce, cycling in place the way a feature phone
+     * does. Any mark already at the cursor is consumed — [finishPadWord] commits the result.
+     *
+     * Returning the mark rather than committing it is what lets the delete-cycle survive punctuation.
+     * Committing it separately, after the word was already finished, left the alternatives window
+     * armed on text that no longer matched the field, so the first delete press quietly fell through
+     * to deleting a character and the pad's whole point was lost on any sentence ending in a full
+     * stop.
+     */
+    private fun nextPunctuation(ic: InputConnection): String {
+        val before = ic.getTextBeforeCursor(1, 0)?.toString().orEmpty()
+        val at = PUNCTUATION.indexOf(before)
+        if (at < 0) return PUNCTUATION[0].toString()
+        ic.deleteSurroundingText(1, 0)
+        return PUNCTUATION[(at + 1) % PUNCTUATION.length].toString()
+    }
+
+    /**
+     * The globe key: hand over to another keyboard.
+     *
+     * `switchToNextInputMethod` is the API that respects the user's own order and, on Android 11 and
+     * later, is the only way an IME may switch itself without the picker. It returns false when there
+     * is no next one to go to — which can happen even though the key was shown, because the key is laid
+     * out when the keyboard is created and the user may have disabled everything else since — and in
+     * that case the picker is the honest answer rather than a key that silently does nothing.
+     */
+    override fun onSwitchInput() {
+        val switched = try {
+            switchToNextInputMethod(false)
+        } catch (e: Exception) {
+            false
+        }
+        if (switched) return
+        try {
+            getSystemService(InputMethodManager::class.java)?.showInputMethodPicker()
+        } catch (e: Exception) {
+            // Nothing to hand over to and no picker either. Staying put is the only option left, and
+            // it is a perfectly good one: the user still has a working keyboard.
+        }
+    }
+
     override fun onBackspaceWord() {
         val ic = currentInputConnection ?: return
+        settleMultiTap()
+        if (padOpen) { clearPadWord(ic); return }
         clearUndo()
-        clearGesture()
+        clearAlternatives()
         val selected = ic.getSelectedText(0)
         if (!selected.isNullOrEmpty()) { ic.commitText("", 1); return }
         val before = ic.getTextBeforeCursor(64, 0) ?: ""
@@ -255,7 +646,9 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
 
     override fun onEnter() {
         val ic = currentInputConnection ?: return
-        clearGesture()
+        if (padOpen) resetPadWord()
+        settleMultiTap()
+        clearAlternatives()
         // Fix the last word before firing the action / newline.
         if (autocorrectOn()) {
             val before = textBeforeCursor(CONTEXT_LOOKBACK)
@@ -285,7 +678,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     override fun onDoubleSpace() {
         val ic = currentInputConnection ?: return
         clearUndo()
-        clearGesture()
+        clearAlternatives()
         val before = ic.getTextBeforeCursor(2, 0)?.toString().orEmpty()
         if (before.length == 2 && before[1] == ' ' && before[0].isLetterOrDigit()) {
             ic.beginBatchEdit()
@@ -327,7 +720,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
                 // Each finished segment commits to the field; dictation keeps going across pauses.
                 onSegment = { text ->
                     clearUndo()
-                    clearGesture()
+                    clearAlternatives()
                     currentInputConnection?.commitText(spacedDictation(text), 1)
                 },
                 onError = { msg ->
@@ -398,14 +791,33 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         val word = item.word
         val ic = currentInputConnection ?: return
 
+        // Mid-word on the keypad, a tapped reading replaces the one showing and keeps the word open:
+        // the user has said which reading they meant, not that they have finished typing. Further taps
+        // still extend it, which is what makes picking early worth doing.
+        if (padOpen && padShown.isNotEmpty() &&
+            ic.getTextBeforeCursor(padShown.length, 0)?.toString() == padShown
+        ) {
+            val cased = if (padCapitalized) word.replaceFirstChar { it.uppercaseChar() } else word
+            ic.beginBatchEdit()
+            ic.deleteSurroundingText(padShown.length, 0)
+            ic.commitText(cased, 1)
+            ic.endBatchEdit()
+            padShown = cased
+            // Move the chosen reading to the front so the strip stops offering it back, and so
+            // finishing the word arms the delete key with this order rather than the original one.
+            padReadings = listOf(word) + padReadings.filterNot { it.equals(word, ignoreCase = true) }
+            refreshSuggestions()
+            return
+        }
+
         // After a swipe there is no partial word at the cursor to replace — the gesture committed a
         // whole word plus a trailing space. Tapping an alternative has to replace THAT, or the two words
         // end up side by side, which is the opposite of choosing between them.
-        val committed = gestureCommitted
+        val committed = altCommitted
         if (committed != null && ic.getTextBeforeCursor(committed.length, 0)?.toString() == committed) {
-            val replacement = gestureText(word)
+            val replacement = alternativeText(word)
             clearUndo()
-            clearGesture()
+            clearAlternatives()
             ic.beginBatchEdit()
             ic.deleteSurroundingText(committed.length, 0)
             ic.commitText(replacement, 1)
@@ -416,7 +828,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
 
         val original = trailingWord()
         clearUndo()
-        clearGesture()
+        clearAlternatives()
         ic.beginBatchEdit()
         if (original.isNotEmpty()) ic.deleteSurroundingText(original.length, 0)
         val cased = if (original.isNotEmpty()) applyCase(original, word) else word
@@ -443,7 +855,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         val ic = currentInputConnection ?: return
         val original = trailingWord()
         clearUndo()
-        clearGesture()
+        clearAlternatives()
         ic.beginBatchEdit()
         if (original.isNotEmpty()) ic.deleteSurroundingText(original.length, 0)
         ic.commitText(code, 1)
@@ -471,7 +883,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         val to = undoTo
         if (from != null && to != null && ic.getTextBeforeCursor(from.length, 0)?.toString() == from) {
             clearUndo()
-            clearGesture()
+            clearAlternatives()
             ic.beginBatchEdit()
             ic.deleteSurroundingText(from.length, 0)
             ic.commitText(to, 1)
@@ -486,13 +898,13 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         // exactly as wanted, and learning it is the entire action. Committing again would double it.
         if (original.isEmpty() && justFinishedWord(before) == word) {
             clearUndo()
-            clearGesture()
+            clearAlternatives()
             learnWord(word)
             refreshSuggestions()
             return
         }
         clearUndo()
-        clearGesture()
+        clearAlternatives()
         ic.beginBatchEdit()
         if (original.isNotEmpty()) ic.deleteSurroundingText(original.length, 0)
         val lead = if (original.isEmpty() && needsLeadingSpace()) " " else ""
@@ -574,11 +986,22 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         if (s == null) { kb.setSuggestions(emptyList()); return }
         // Mid-swipe-alternatives, the strip shows those instead: they are what the user is choosing
         // between, and they are already ranked.
-        gestureAlternates?.let { alts ->
-            // Skip past the reading currently sitting in the field: offering it back does nothing.
-            // No literal slot here: a swipe has no typed spelling to keep, only other readings.
+        // Mid-word on the keypad the strip shows the other readings of the taps so far. This is the one
+        // place the strip earns its space even for someone who likes the delete key: on a pad every
+        // word is ambiguous from the first tap, so seeing the runners-up as you go is the difference
+        // between trusting it and checking it.
+        if (padReadings.size > 1) {
             kb.setSuggestions(
-                alts.drop(gestureIndex + 1).take(SUGGESTION_SLOTS).map { StripItem(it) },
+                padReadings.drop(1).take(SUGGESTION_SLOTS).map { StripItem(it) },
+            )
+            return
+        }
+        altWords?.let { alts ->
+            // Skip past the reading currently sitting in the field: offering it back does nothing.
+            // The literal is already the last entry when there is one, so it reaches the strip the
+            // same way every other reading does and needs no slot of its own.
+            kb.setSuggestions(
+                alts.drop(altIndex + 1).take(SUGGESTION_SLOTS).map { StripItem(it) },
             )
             return
         }
@@ -661,46 +1084,121 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         )
         if (words.isEmpty()) return
         clearUndo()
-        gestureCapitalized = keyboard?.isShifted == true
-        val text = gestureText(words[0])
+        // Worked out before anything is committed: once the word is in the field the character before
+        // the cursor is the word's own last letter, and every reading would then get a leading space.
+        val lead = if (needsLeadingSpace()) " " else ""
+        altLead = lead
+        altSuffix = " "
+        altOriginal = ""
+        altCapitalized = keyboard?.isShifted == true
+        val text = alternativeText(words[0])
         ic.commitText(text, 1)
-        gestureAlternates = words
-        gestureIndex = 0
-        gestureCommitted = text
+        armAlternatives(
+            words = words,
+            committed = text,
+            lead = lead,
+            suffix = " ",
+            // A trace has no typed spelling, so there is no literal to end the list with and no case
+            // to match — the shift key decides that instead. This is also what tells onBackspace that
+            // Revert has nothing to revert to here, so cycling stays available at either setting.
+            original = "",
+            capitalized = altCapitalized,
+        )
         refreshSuggestions()
     }
 
     /**
-     * Backspace straight after a swipe: replace the committed word with the trace's next-best reading
-     * instead of deleting a character. This is how alternatives are offered without a suggestion bar.
+     * Open the alternatives window on a word the keyboard just put into the field.
      *
-     * Bails out — letting backspace delete normally — once the readings are exhausted, or if the text
-     * at the cursor is no longer what we committed (the user moved the caret, or another app rewrote
-     * the field), so we never overwrite something we didn't put there.
+     * [words] is every reading, best first, and **must end with what the user actually typed** — that
+     * is what makes the last press of the delete key always get you back to your own spelling, whether
+     * the keyboard corrected a tapped word or decoded a traced one.
      */
-    private fun cycleGesture(ic: InputConnection): Boolean {
-        val alts = gestureAlternates ?: return false
-        val committed = gestureCommitted ?: return false
-        if (gestureIndex + 1 >= alts.size) { clearGesture(); return false }
+    private fun armAlternatives(
+        words: List<String>,
+        committed: String,
+        lead: String,
+        suffix: String,
+        original: String,
+        capitalized: Boolean,
+    ) {
+        if (words.size < 2) { clearAlternatives(); return }
+        altWords = words
+        altIndex = 0
+        altCommitted = committed
+        altLead = lead
+        altSuffix = suffix
+        altOriginal = original
+        altCapitalized = capitalized
+    }
+
+    /**
+     * Backspace inside the alternatives window: replace what is in the field with the next reading
+     * instead of deleting a character. This is how the keyboard offers alternatives with no suggestion
+     * bar and no screen space — the list is under a key the thumb is already on.
+     *
+     * Bails out, letting backspace delete normally, once the readings are exhausted or if the text at
+     * the cursor is no longer what was committed (the caret moved, or the app rewrote the field), so
+     * nothing is ever overwritten that this keyboard did not put there.
+     */
+    private fun cycleAlternatives(ic: InputConnection): Boolean {
+        val alts = altWords ?: return false
+        val committed = altCommitted ?: return false
+        if (altIndex + 1 >= alts.size) { clearAlternatives(); return false }
         if (ic.getTextBeforeCursor(committed.length, 0)?.toString() != committed) {
-            clearGesture()
+            clearAlternatives()
             return false
         }
-        gestureIndex++
-        val next = gestureText(alts[gestureIndex])
+        altIndex++
+        val next = alternativeText(alts[altIndex])
         ic.beginBatchEdit()
         ic.deleteSurroundingText(committed.length, 0)
         ic.commitText(next, 1)
         ic.endBatchEdit()
-        gestureCommitted = next
+        altCommitted = next
+        // Reaching the user's own spelling ends the window rather than leaving it open on nothing:
+        // one more press should delete a character, which is what a delete key does.
+        if (altIndex + 1 >= alts.size) {
+            clearAlternatives()
+            clearUndo()
+        }
         refreshSuggestions()
         return true
     }
 
-    /** A decoded word dressed for insertion: leading space if needed, the user's case, trailing space. */
-    private fun gestureText(word: String): String {
-        val cased = if (gestureCapitalized) word.replaceFirstChar { it.uppercaseChar() } else word
-        return if (needsLeadingSpace()) " $cased " else "$cased "
+    /**
+     * Jump straight to the last reading — what the user typed — and close the window.
+     *
+     * This is [Prefs.DELETE_REVERT]: one press puts your own spelling back and that is the end of it.
+     * Same list, same final destination as cycling; it just skips the stops in between.
+     */
+    private fun revertToLiteral(ic: InputConnection): Boolean {
+        val alts = altWords ?: return false
+        val committed = altCommitted ?: return false
+        if (ic.getTextBeforeCursor(committed.length, 0)?.toString() != committed) {
+            clearAlternatives()
+            return false
+        }
+        val literal = alternativeText(alts.last())
+        clearAlternatives()
+        clearUndo()
+        if (literal == committed) return false     // already showing it; let backspace delete
+        ic.beginBatchEdit()
+        ic.deleteSurroundingText(committed.length, 0)
+        ic.commitText(literal, 1)
+        ic.endBatchEdit()
+        refreshSuggestions()
+        return true
+    }
+
+    /** A reading dressed for insertion: whatever led the word, the user's case, whatever followed it. */
+    private fun alternativeText(word: String): String {
+        val cased = when {
+            altOriginal.isNotEmpty() -> applyCase(altOriginal, word)
+            altCapitalized -> word.replaceFirstChar { it.uppercaseChar() }
+            else -> word
+        }
+        return altLead + cased + altSuffix
     }
 
     /** True when the character before the cursor is neither absent nor whitespace. */
@@ -709,10 +1207,15 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         return before.isNotEmpty() && !before.last().isWhitespace()
     }
 
-    private fun clearGesture() {
-        gestureAlternates = null
-        gestureCommitted = null
-        gestureIndex = 0
+    /** Close the alternatives window. Anything the user does other than backspace ends it. */
+    private fun clearAlternatives() {
+        altWords = null
+        altCommitted = null
+        altIndex = 0
+        altLead = ""
+        altSuffix = ""
+        altOriginal = ""
+        altCapitalized = false
     }
 
     // ------------------------------------------------------------------ spell checking
@@ -729,15 +1232,52 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     /**
      * The replacement for a just-finished word, or null to leave it alone.
      *
-     * The bundled dictionary answers if it has loaded — synchronously, which is why this can run at the
+     * The bundled engines answer if they have loaded — synchronously, which is why this can run at the
      * moment the word ends rather than needing a result warmed up in advance. Otherwise it falls back
      * to whatever the phone's spell checker had to say, which is the pre-existing path and on LightOS
      * is normally nothing at all.
+     *
+     * [readings] is the already-gathered candidate list when the caller has one, so the decision and
+     * the delete-key list are made from the same gather and cannot disagree.
      */
-    private fun fixFor(word: String, ctx: WordContext): String? {
+    private fun fixFor(
+        word: String,
+        ctx: WordContext,
+        readings: List<Alternatives.Candidate>? = null,
+    ): String? {
         if (word.length < 2) return null
-        engine.corrector?.let { return it.correct(word, ctx) }
+        if (engine.ready) {
+            val all = readings ?: engine.alternativesFor(word, ctx)
+            return Alternatives.autoCommit(all, word, Prefs.correctionStrength(this))?.word
+        }
         return corrections[word]
+    }
+
+    /**
+     * The candidate list turned into the readings the delete key walks: the committed correction
+     * first, then the runner-ups, and the user's own spelling last.
+     *
+     * [Alternatives] already ends its list with the literal and already has the winner at the front,
+     * so this is mostly a check that both of those are true of *this* list — a shortcut can reorder
+     * the front, and a caller may have committed something other than the top candidate. Getting it
+     * wrong would mean a delete key that never gets back to what was typed, which is the one thing
+     * about this feature that has to be reliable.
+     */
+    private fun readingsFrom(
+        readings: List<Alternatives.Candidate>,
+        committed: String,
+        original: String,
+    ): List<String> {
+        val out = ArrayList<String>(readings.size + 1)
+        out.add(committed)
+        for (c in readings) {
+            val w = c.word
+            if (w.equals(committed, ignoreCase = true)) continue
+            if (w.equals(original, ignoreCase = true)) continue
+            out.add(w)
+        }
+        out.add(original)
+        return out
     }
 
     /** Ask the device spell checker about [word] (once); the answer lands in [corrections]. */
@@ -867,6 +1407,15 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         const val EXTRA_VISIBLE = "visible"
         /** Window of text to inspect when deleting the last grapheme cluster (covers long emoji). */
         private const val GRAPHEME_LOOKBACK = 16
+        /** Readings to keep for the keypad word in progress, for the delete key to walk afterwards. */
+        const val PAD_READINGS = 6
+
+        /** A key pressed again within this long cycles to its next letter, in multi-tap. */
+        const val MULTITAP_TIMEOUT_MS = 900L
+
+        /** What the 1 key cycles through, in the order a sentence usually needs them. */
+        const val PUNCTUATION = ".,?!'"
+
         /** How many readings of one trace to keep, i.e. how many times backspace can cycle. */
         private const val GESTURE_ALTERNATES = 4
         /** Slots in the suggestion strip. Mirrors Suggester.SLOTS. */

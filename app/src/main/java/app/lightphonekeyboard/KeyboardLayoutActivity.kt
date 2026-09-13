@@ -15,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity
 class KeyboardLayoutActivity : AppCompatActivity() {
 
     private val checks = ArrayList<Pair<String, TextView>>()
+    private val t9Checks = ArrayList<Pair<String, TextView>>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,6 +46,16 @@ class KeyboardLayoutActivity : AppCompatActivity() {
         option(root, pad, Prefs.LAYOUT_QWERTY, "QWERTY")
         option(root, pad, Prefs.LAYOUT_AZERTY, "AZERTY")
         option(root, pad, Prefs.LAYOUT_QWERTZ, "QWERTZ")
+        option(root, pad, Prefs.LAYOUT_T9, getString(R.string.layout_t9))
+
+        // The keypad's own settings, shown only when the keypad is the chosen layout — a
+        // predictive-vs-multi-tap choice means nothing on QWERTY, and a row that does nothing is
+        // worse than no row.
+        if (Prefs.isKeypad(this)) {
+            root.addView(label(getString(R.string.layout_t9_heading), 18f, R.color.gray))
+            t9Option(root, pad, Prefs.T9_PREDICTIVE, getString(R.string.t9_predictive), getString(R.string.t9_predictive_detail))
+            t9Option(root, pad, Prefs.T9_MULTITAP, getString(R.string.t9_multitap), getString(R.string.t9_multitap_detail))
+        }
         refreshChecks()
 
         setContentView(LightScrollView(this).apply {
@@ -83,11 +94,60 @@ class KeyboardLayoutActivity : AppCompatActivity() {
         )
     }
 
+    /**
+     * A keypad-mode row. Unlike the layout rows it does not close the screen — the two keypad settings
+     * are read together, and being thrown back to the previous page after choosing one of them would
+     * mean walking back in to see the other.
+     */
+    private fun t9Option(parent: LinearLayout, pad: Int, key: String, name: String, detail: String) {
+        val labels = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                TextView(this@KeyboardLayoutActivity).apply {
+                    text = name
+                    setTextColor(getColor(R.color.white))
+                    textSize = 22f
+                },
+            )
+            addView(
+                TextView(this@KeyboardLayoutActivity).apply {
+                    text = detail
+                    setTextColor(getColor(R.color.gray))
+                    textSize = 15f
+                },
+            )
+        }
+        val checkView = TextView(this).apply {
+            text = "✓"
+            setTextColor(getColor(R.color.white))
+            textSize = 22f
+        }
+        t9Checks.add(key to checkView)
+        parent.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, pad / 2, 0, pad / 2)
+                isClickable = true
+                setOnClickListener {
+                    Prefs.setT9Mode(this@KeyboardLayoutActivity, key)
+                    refreshChecks()
+                }
+                addView(labels, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(checkView)
+            },
+        )
+    }
+
     /** Tick the active layout; INVISIBLE (not GONE) on the rest so every row keeps the ✓ column and stays aligned. */
     private fun refreshChecks() {
         val current = Prefs.keyLayout(this)
         for ((key, view) in checks) {
             view.visibility = if (key == current) View.VISIBLE else View.INVISIBLE
+        }
+        val mode = Prefs.t9Mode(this)
+        for ((key, view) in t9Checks) {
+            view.visibility = if (key == mode) View.VISIBLE else View.INVISIBLE
         }
     }
 }

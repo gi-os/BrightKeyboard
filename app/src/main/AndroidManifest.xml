@@ -69,6 +69,12 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
+        <!-- How much autocorrect fixes, and what the delete key does after it. Opened from setup. -->
+        <activity
+            android:name=".AutocorrectActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
         <!-- The personal word list (names etc), opened from setup. -->
         <activity
             android:name=".UserWordsActivity"

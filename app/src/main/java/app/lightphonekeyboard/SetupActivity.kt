@@ -16,6 +16,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import app.lightphonekeyboard.text.Alternatives
 import app.lightphonekeyboard.text.UserWords
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -35,6 +36,7 @@ class SetupActivity : AppCompatActivity() {
     private var voiceAccessory: TextView? = null
     private var layoutValue: TextView? = null
     private var heightValue: TextView? = null
+    private var correctionValue: TextView? = null
     private var step1: Step? = null
     private var step2: Step? = null
 
@@ -212,6 +214,26 @@ class SetupActivity : AppCompatActivity() {
             }
         }
 
+        // How much autocorrect fixes, and what the delete key does after it. Sits next to the layout
+        // and height rows because it is the same kind of thing: a choice with more than two answers,
+        // so it gets its own page rather than a toggle.
+        val correctionRow = run {
+            val title = label(getString(R.string.setup_autocorrect_settings), 20f, R.color.white)
+                .apply { setPadding(0, 0, 0, 0) }
+            correctionValue = label("", 14f, R.color.gray).apply { setPadding(0, 0, 0, 0) }
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, pad, 0, 0)
+                isClickable = true
+                setOnClickListener {
+                    startActivity(Intent(this@SetupActivity, AutocorrectActivity::class.java))
+                }
+                addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(correctionValue)
+            }
+        }
+
         // "Try the keyboard" — a compact toggle row, not a boxed input: tap to pop the keyboard up and
         // feel the current height / layout / accuracy; tap the chevron (or the keyboard's own hide key)
         // to close. Last in the list so the keyboard never covers another setting. If Light isn't the
@@ -258,7 +280,7 @@ class SetupActivity : AppCompatActivity() {
             autocorrectToggle, swipeToggle, suggestionsToggle, autocapToggle, autoperiodToggle,
             returnToggle, emojiToggle,
             voiceRow, voiceStatus!!,
-            layoutRow, heightRow, wordsRow, tryRow,
+            layoutRow, heightRow, correctionRow, wordsRow, tryRow,
         ).forEach { root.addView(it) }
 
         // Reflect the keyboard's real state on the chevron (▴ open / ▾ closed), however it's toggled.
@@ -283,6 +305,7 @@ class SetupActivity : AppCompatActivity() {
         super.onResume()
         refreshLayout()       // reflect a layout chosen on the picker page
         refreshHeight()       // reflect a height chosen on the picker page
+        refreshCorrection()   // ...and a strength or delete-key choice made on the autocorrect page
         refreshWords()        // reflect words added or removed on the word-list page
         refreshSetupState()   // steps may have been completed over in system settings
         contentResolver.registerContentObserver(
@@ -340,7 +363,28 @@ class SetupActivity : AppCompatActivity() {
     private fun layoutName(key: String): String = when (key) {
         Prefs.LAYOUT_AZERTY -> "AZERTY"
         Prefs.LAYOUT_QWERTZ -> "QWERTZ"
+        Prefs.LAYOUT_T9 -> getString(R.string.layout_t9)
         else -> "QWERTY"
+    }
+
+    /**
+     * Summarise both autocorrect settings on their row, so the common case — checking what it is set
+     * to — needs no tap. Two values on one line because they are read together: "Balanced · Show other
+     * words" is the whole of the answer.
+     */
+    private fun refreshCorrection() {
+        val strength = getString(
+            when (Prefs.correctionStrength(this)) {
+                Alternatives.Strength.CAUTIOUS -> R.string.autocorrect_cautious
+                Alternatives.Strength.BALANCED -> R.string.autocorrect_balanced
+                Alternatives.Strength.EAGER -> R.string.autocorrect_eager
+            },
+        )
+        val delete = getString(
+            if (Prefs.deleteAction(this) == Prefs.DELETE_REVERT) R.string.delete_revert
+            else R.string.delete_cycle,
+        )
+        correctionValue?.text = "$strength · $delete"
     }
 
     /** Update the current-height name shown on the keyboard-height row. */

@@ -12,8 +12,10 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
+import android.view.inputmethod.InputMethodManager
 import app.lightphonekeyboard.text.GestureDecoder
 import app.lightphonekeyboard.text.KeyGrid
+import app.lightphonekeyboard.text.Keypad
 import app.lightphonekeyboard.text.StripItem
 import app.lightphonekeyboard.text.Suggester
 import java.nio.ByteBuffer
@@ -69,6 +71,39 @@ class LightKeyboardView @JvmOverloads constructor(
         fun textBeforeCursor(n: Int): CharSequence?
         /** Mic key tapped — start voice dictation. */
         fun onMic()
+
+        /**
+         * A key on the twelve-key pad. [digit] is 0-9; [shifted] is the shift state at the moment of
+         * the press, which the host needs because a keypad word is committed long after the key that
+         * started it.
+         */
+        fun onKeypad(digit: Int, shifted: Boolean)
+
+        /**
+         * A trace has begun on the pad, so the digit its first key just added should be taken back —
+         * the trace will supply the whole sequence itself.
+         */
+        fun onKeypadTraceStart()
+
+        /** A finished trace across the pad, as the digits of the keys it crossed, in order. */
+        fun onKeypadGesture(digits: String)
+
+        /**
+         * A pad trace came to nothing — too short, or cancelled. The digit [onKeypadTraceStart] took
+         * back has to be restored, or the tap that started the trace is lost.
+         */
+        fun onKeypadTraceCancel()
+
+        /**
+         * Globe key tapped — move to the next enabled keyboard.
+         *
+         * Tap only, with no held-down variant for the full picker, which is the usual second half of
+         * this key elsewhere. Keys in this view commit on touch-down rather than on release — see
+         * [pressDown] — so by the time a hold could fire, the switch has already happened and this
+         * view is gone. Rather than make one key behave differently from every other, the host
+         * falls back to the picker when there is no sensible "next" to go to.
+         */
+        fun onSwitchInput()
         /** Listening surface tapped — cancel dictation. */
         fun onMicCancel()
 
@@ -102,6 +137,28 @@ class LightKeyboardView @JvmOverloads constructor(
         const val EMOJI = "__EMOJI__"
         const val EMOJI_BACK = "__EMOJI_BACK__"
         const val MIC = "__MIC__"
+
+        /**
+         * Switch to another keyboard. Only ever laid out when the phone has more than one enabled —
+         * see [applyPrefs] — because on a phone with only this keyboard installed it is a key that
+         * does nothing, and a bottom row is too narrow to spend on one of those.
+         */
+        const val GLOBE = "__GLOBE__"
+        /**
+         * The twelve-key phone pad. Its keys carry their own ids rather than the bare digits, because
+         * `"2"` on the symbols layer means "type a 2" and `2` on the keypad means "one of a, b or c" —
+         * the same label, two different things, and sharing an id would make [onKey] guess which.
+         */
+        const val PAD_PREFIX = "__PAD_"
+        fun pad(digit: Int) = "$PAD_PREFIX${digit}__"
+
+        /** True for any keypad key, including 0 (space) and 1 (punctuation). */
+        fun isPad(id: String) = id.startsWith(PAD_PREFIX)
+
+        /** The digit [id] stands for, or -1. */
+        fun padDigit(id: String): Int =
+            if (isPad(id)) id.substring(PAD_PREFIX.length, id.length - 2).toIntOrNull() ?: -1 else -1
+
         const val SYMBOLS = "123"
         const val LETTERS = "ABC"
         const val MORE = "#+="
@@ -112,32 +169,46 @@ class LightKeyboardView @JvmOverloads constructor(
             listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
             listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
             listOf(Key.SHIFT, "z", "x", "c", "v", "b", "n", "m", Key.BACKSPACE),
-            listOf(Key.SYMBOLS, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
+            listOf(Key.SYMBOLS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
         )
         // French AZERTY and German QWERTZ — same control keys, only the three letter rows differ.
         val azerty = listOf(
             listOf("a", "z", "e", "r", "t", "y", "u", "i", "o", "p"),
             listOf("q", "s", "d", "f", "g", "h", "j", "k", "l", "m"),
             listOf(Key.SHIFT, "w", "x", "c", "v", "b", "n", Key.BACKSPACE),
-            listOf(Key.SYMBOLS, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
+            listOf(Key.SYMBOLS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
         )
         val qwertz = listOf(
             listOf("q", "w", "e", "r", "t", "z", "u", "i", "o", "p"),
             listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
             listOf(Key.SHIFT, "y", "x", "c", "v", "b", "n", "m", Key.BACKSPACE),
-            listOf(Key.SYMBOLS, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
+            listOf(Key.SYMBOLS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
+        )
+        /**
+         * The phone pad. Three rows of digits with the control keys down the right-hand side, which is
+         * where a thumb already is, then the usual bottom row.
+         *
+         * 1 carries the punctuation and 0 is the space, exactly as on a feature phone — those two
+         * placements are muscle memory for anyone who ever used one, and this layout exists for people
+         * who want that back.
+         */
+        val keypad = listOf(
+            listOf(Key.pad(1), Key.pad(2), Key.pad(3), Key.BACKSPACE),
+            listOf(Key.pad(4), Key.pad(5), Key.pad(6), Key.SHIFT),
+            listOf(Key.pad(7), Key.pad(8), Key.pad(9), Key.ENTER),
+            listOf(Key.SYMBOLS, Key.GLOBE, Key.pad(0), Key.EMOJI, Key.MIC),
         )
         val symbols = listOf(
             listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
             listOf("-", "/", ":", ";", "(", ")", "$", "&", "@", "\""),
             listOf(Key.MORE, ".", ",", "?", "!", "'", Key.BACKSPACE),
-            listOf(Key.LETTERS, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
+            listOf(Key.LETTERS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
         )
         val more = listOf(
             listOf("[", "]", "{", "}", "#", "%", "^", "*", "+", "="),
             listOf("_", "\\", "|", "~", "<", ">", "€", "£", "¥"),
             listOf(Key.SYMBOLS, ".", ",", "?", "!", "'", Key.BACKSPACE),
-            listOf(Key.LETTERS, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
+            listOf(Key.LETTERS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
         )
         val emoji = listOf(
             "😅", "😊", "🙃", "😍", "😜", "😂", "😭", "😎",
@@ -271,8 +342,29 @@ class LightKeyboardView @JvmOverloads constructor(
         swipeTyping = Prefs.swipeTyping(context)
         hiddenKeys.clear()
         if (!Prefs.voiceEnabled(context)) hiddenKeys.add(Key.MIC)
+        // The globe appears only when there is somewhere to go. Asked of the system rather than
+        // stored as a setting, because the answer changes whenever the user installs, removes or
+        // enables a keyboard in Android settings — and this runs on every reset(), so it is current.
+        if (!hasOtherInputMethods()) hiddenKeys.add(Key.GLOBE)
         if (!Prefs.emojiKey(context)) hiddenKeys.add(Key.EMOJI)
         if (!Prefs.returnKey(context)) hiddenKeys.add(Key.ENTER)
+    }
+
+    /**
+     * True when the phone has a keyboard other than this one enabled, which is the only case where a
+     * switch key has anywhere to go.
+     *
+     * `getEnabledInputMethodList()` is the list the user has ticked in Android's own settings, not the
+     * list of installed keyboards — which is the right question, since an installed but unticked
+     * keyboard cannot be switched to anyway. Anything at all going wrong here is answered with false:
+     * a missing key is a cosmetic loss, and an exception thrown during layout is no keyboard at all,
+     * in every text field on the phone.
+     */
+    private fun hasOtherInputMethods(): Boolean = try {
+        val imm = context.getSystemService(InputMethodManager::class.java)
+        (imm?.enabledInputMethodList?.size ?: 0) > 1
+    } catch (e: Exception) {
+        false
     }
 
     private val emojiCols = 8
@@ -344,6 +436,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 Layer.LETTERS -> when (keyLayout) {
                     Prefs.LAYOUT_AZERTY -> Layout.azerty
                     Prefs.LAYOUT_QWERTZ -> Layout.qwertz
+                    Prefs.LAYOUT_T9 -> Layout.keypad
                     else -> Layout.letters
                 }
                 Layer.SYMBOLS -> Layout.symbols
@@ -620,6 +713,7 @@ class LightKeyboardView @JvmOverloads constructor(
             }
             return
         }
+        if (Key.isPad(id)) { drawPadKey(canvas, pk); return }
         val size = if (layer == Layer.EMOJI) emojiTextSize else if (id.length == 1) keyTextSize else labelTextSize
         textPaint.textSize = size
         val baseline = pk.vis.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f
@@ -641,6 +735,7 @@ class LightKeyboardView @JvmOverloads constructor(
         Key.ENTER -> R.drawable.ic_kb_enter
         Key.EMOJI_BACK -> R.drawable.ic_kb_chevron_down
         Key.MIC -> R.drawable.ic_kb_mic
+        Key.GLOBE -> R.drawable.ic_kb_globe
         Key.SHIFT -> if (shifted) R.drawable.ic_kb_chevron_down else R.drawable.ic_kb_chevron_up
         else -> null
     }
@@ -649,17 +744,49 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun padFor(id: String): Float = when (id) {
         Key.SHIFT -> if (compact) dpf(6) else dpf(9)
         Key.BACKSPACE, Key.EMOJI_BACK -> if (compact) dpf(7) else dpf(10)
-        Key.MIC -> if (compact) dpf(6) else dpf(9)
+        Key.MIC, Key.GLOBE -> if (compact) dpf(6) else dpf(9)
         else -> if (compact) dpf(5) else dpf(7)
     }
 
     private fun labelFor(id: String): String =
         if (shifted && layer == Layer.LETTERS && id.length == 1 && id[0].isLetter()) id.uppercase() else id
 
-    private fun weightFor(id: String): Float = when (id) {
-        Key.SPACE -> 5f
-        Key.SYMBOLS, Key.LETTERS, Key.MORE -> 1.4f
+    private fun weightFor(id: String): Float = when {
+        id == Key.SPACE -> 5f
+        // The pad's 0 is its space bar, so it gets the widest key in its row — but nothing like the
+        // letter keyboard's 5x, because the three keys beside it are real keys and not fillers.
+        id == Key.pad(0) -> 2f
+        id == Key.SYMBOLS || id == Key.LETTERS || id == Key.MORE -> 1.4f
         else -> 1f
+    }
+
+    /**
+     * A keypad key: the digit, with its letters underneath.
+     *
+     * Both halves are drawn, and the letters are the smaller of the two, because on a phone pad the
+     * letters are what you are actually aiming at — the digit is the landmark. 1 and 0 have no letters,
+     * so they carry what they do instead, which is the only way to know a pad's 0 is the space bar.
+     */
+    private fun drawPadKey(canvas: Canvas, pk: PlacedKey) {
+        val digit = Key.padDigit(pk.id)
+        val sub = when (digit) {
+            0 -> "space"
+            1 -> ".,?!"
+            else -> Keypad.LETTERS.getOrNull(digit)?.let { if (shifted) it.uppercase() else it } ?: ""
+        }
+        val cx = pk.vis.centerX()
+        val cy = pk.vis.centerY()
+        // Sub-labels crowd a short key, so the digit shrinks a little to make room and the pair is
+        // centred as a block rather than each half being centred on its own.
+        textPaint.textSize = keyTextSize * 0.88f
+        val digitH = textPaint.descent() - textPaint.ascent()
+        val subSize = keyTextSize * 0.46f
+        val block = digitH + subSize * 1.1f
+        val digitBaseline = cy - block / 2f - textPaint.ascent()
+        canvas.drawText(digit.toString(), cx, digitBaseline, textPaint)
+        if (sub.isEmpty()) return
+        textPaint.textSize = subSize
+        canvas.drawText(sub, cx, digitBaseline + subSize * 1.15f, textPaint)
     }
 
     // ------------------------------------------------------------------ touch
@@ -836,10 +963,12 @@ class LightKeyboardView @JvmOverloads constructor(
      * first letter, and the decoded word will supply it.
      */
     private fun maybeStartTrace(x: Float, y: Float) {
-        if (!swipeTyping || layer != Layer.LETTERS || letterKeys.isEmpty()) return
+        if (!swipeTyping || layer != Layer.LETTERS) return
+        if (!keypadMode && letterKeys.isEmpty()) return
         if (pressed.size != 1) return
         val start = pressed[firstPointerId] ?: return
-        if (!isLetter(start.id)) return
+        // On the pad a trace starts from a lettered key; everywhere else, from a letter.
+        if (!(if (keypadMode) isTraceablePad(start.id) else isLetter(start.id))) return
         val dx = x - downX
         val dy = y - downY
         if (dx * dx + dy * dy < traceStartDist * traceStartDist) return
@@ -849,10 +978,24 @@ class LightKeyboardView @JvmOverloads constructor(
         stopBackspaceRepeat()
         if (firstKeyRetractable) listener?.onBackspace()
         firstKeyRetractable = false
+        // On the pad, the key the finger went down on already added its digit to the sequence the host
+        // is holding. A trace replaces that sequence rather than extending it, so take it back.
+        if (keypadMode) listener?.onKeypadTraceStart()
         pressed.clear()
         traceCount = 0
+        tracedDigits.setLength(0)
         addTracePoint(downX, downY)
         addTracePoint(x, y)
+    }
+
+    /** Keys a pad trace may pass through: the lettered ones. 0 is a space and 1 is punctuation. */
+    private fun isTraceablePad(id: String): Boolean {
+        // Multi-tap has no word in progress for a trace to replace: its whole promise is that a key
+        // press is a letter and nothing else. A trace there would leave the letter the touch-down
+        // committed sitting in front of a decoded word.
+        if (Prefs.t9Mode(context) == Prefs.T9_MULTITAP) return false
+        val d = Key.padDigit(id)
+        return d in 2..9
     }
 
     /**
@@ -878,7 +1021,30 @@ class LightKeyboardView @JvmOverloads constructor(
         // or not — otherwise turning suggestions on would silently shift every gesture down by a row.
         traceY[traceCount] = (y - stripH + averageBiasY()) / rowPitch
         traceCount++
+        // A pad trace is read as the sequence of keys it crossed rather than as a shape. With twelve
+        // large keys that is unambiguous, where fitting a stroke to letter positions would not be —
+        // there are no letter positions, three letters share every key.
+        if (keypadMode) recordTracedKey(x, y)
         invalidate()
+    }
+
+    /**
+     * Note which pad key the trace is now over, ignoring repeats.
+     *
+     * Consecutive repeats are dropped because a finger dwelling on a key is one visit, not several —
+     * and, more importantly, because a finger physically cannot visit the same key twice in a row. That
+     * is why [app.lightphonekeyboard.text.T9] keeps a second index of *collapsed* digit signatures:
+     * `hello` is 4-3-5-5-6 tapped and 4-3-5-6 traced, and the collapsed index is what makes the second
+     * of those find it.
+     */
+    private fun recordTracedKey(x: Float, y: Float) {
+        if (tracedDigits.length >= MAX_TRACED_DIGITS) return
+        val key = findKey(x, y) ?: return
+        val d = Key.padDigit(key.id)
+        if (d < 2 || d > 9) return
+        val c = '0' + d
+        if (tracedDigits.isNotEmpty() && tracedDigits.last() == c) return
+        tracedDigits.append(c)
     }
 
     private fun averageBiasY(): Float {
@@ -899,13 +1065,29 @@ class LightKeyboardView @JvmOverloads constructor(
         // Two points is a real stroke, not a stub: the trace only starts once the finger has left the
         // key it went down on, and a short flick between neighbouring keys can report exactly one MOVE
         // before the lift. Demanding three threw those away — every one of them a two-letter word.
+        if (keypadMode) {
+            val digits = tracedDigits.toString()
+            tracedDigits.setLength(0)
+            // Fewer than two keys is not a word. The digit the starting key contributed was already
+            // taken back when the trace began, so the host has to be told to put it back — otherwise
+            // a drag from a letter key onto backspace or the space bar silently eats a tap, and
+            // leaves a reading in the field with no digits behind it.
+            if (digits.length >= 2) listener?.onKeypadGesture(digits) else listener?.onKeypadTraceCancel()
+            return
+        }
         if (n >= 2) listener?.onGesture(traceX, traceY, n)
     }
 
     private fun abandonTrace() {
+        // A cancelled pad trace owes the host the same digit a too-short one does.
+        if (tracing && keypadMode) listener?.onKeypadTraceCancel()
         tracing = false
         traceCount = 0
+        tracedDigits.setLength(0)
     }
+
+    /** The pad keys a trace has crossed, as digits. Empty except while tracing on the keypad. */
+    private val tracedDigits = StringBuilder(MAX_TRACED_DIGITS)
 
     /** Which strip slot ([0, SLOTS)) a touch lands in, or -1 if it isn't on the strip at all. */
     private fun suggestionSlotAt(x: Float, y: Float): Int {
@@ -968,6 +1150,9 @@ class LightKeyboardView @JvmOverloads constructor(
     private val rowBiasPrior = floatArrayOf(-dpf(10), -dpf(8), -dpf(6))
     private val learnedBiasY = rowBiasPrior.copyOf()   // safe default = the prior; loadLearnedOffsets refines
     private val offsetLearnRate = 0.06f   // EMA step per tap; slow, so a few stray taps don't sway it
+
+    /** True while the twelve-key pad is showing. Several letter-level features are meaningless then. */
+    private val keypadMode: Boolean get() = keyLayout == Prefs.LAYOUT_T9
 
     private fun isLetter(id: String): Boolean = id.length == 1 && id[0] in 'a'..'z'
 
@@ -1086,6 +1271,7 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.MORE -> { layer = Layer.MORE; rebuild() }
             Key.LETTERS -> { layer = Layer.LETTERS; rebuild() }
             Key.MIC -> listener?.onMic()
+            Key.GLOBE -> listener?.onSwitchInput()
             Key.SPACE -> {
                 val now = System.currentTimeMillis()
                 val doublePeriod = autoPeriod && now - lastSpaceTapMs < DOUBLE_TAP_MS
@@ -1094,6 +1280,12 @@ class LightKeyboardView @JvmOverloads constructor(
                 listener?.onText(" "); return true
             }
             else -> {
+                if (Key.isPad(id)) {
+                    // The keypad's own key. The host holds the digit sequence and the word it is
+                    // currently reading, because only it can see the field — see LightImeService.
+                    listener?.onKeypad(Key.padDigit(id), shifted)
+                    return false
+                }
                 if (layer == Layer.EMOJI) { listener?.onText(id); return false }
                 listener?.onText(labelFor(id))
                 return true
@@ -1219,6 +1411,9 @@ class LightKeyboardView @JvmOverloads constructor(
     private companion object {
         /** Cap on recorded trace points. A word trace across this keyboard is a few dozen; the cap is
          *  a guard against a finger held down for a very long time, not a normal limit. */
+        /** A traced word longer than this is not a word, it is a finger wandering. */
+        const val MAX_TRACED_DIGITS = 24
+
         const val MAX_TRACE_POINTS = 192
     }
 }

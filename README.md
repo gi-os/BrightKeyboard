@@ -19,7 +19,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.0.21** (tag `v1.0.21`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v1.1.x** (tag `v1.1.<n>`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -63,10 +63,18 @@ That's it — under five minutes, most of it Android's own settings UI.
 
 Optional settings, all in the app itself:
 
-- **Autocorrect** (on by default) — fixes misspellings when you finish a word, using the bundled
-  dictionary. Backspace once to undo a correction. Off types exactly what you tap.
+- **Autocorrect** (on by default) — fixes misspellings when you finish a word. Four engines run at
+  once and their answers merge into one ranked list: a keyboard-aware edit distance, a sound-alike
+  index (`nite` to `night`), a missed-space search (`alot` to `a lot`), and a table of English facts
+  (`dont` to `don't`). Off types exactly what you tap.
+- **Autocorrect settings** — two choices on their own page. **How much it fixes** (Cautious /
+  Balanced / Eager) decides what the keyboard commits on its own. It never changes what the delete key
+  offers, so turning it down makes the keyboard quieter rather than less capable. **The delete key**
+  chooses between *Show other words*, which walks every guess and ends at exactly what you typed, and
+  *Undo the fix*, which puts your spelling back in one press and stops.
 - **Swipe typing** (on by default) — drag from letter to letter to write a whole word, then lift.
-  Guessed wrong? Backspace cycles through the other words your trace could have meant.
+  Guessed wrong? Delete walks the other words your trace could have meant. This works on the keypad
+  too.
 - **Suggestions** (off by default) — a thin strip above the keys showing three words: completions of
   what you're typing, the correction autocorrect has in mind, or alternate swipe readings, ranked
   against the word before them. Tap one to use it. **Hold** one to forget it — the keyboard stops
@@ -93,7 +101,11 @@ Optional settings, all in the app itself:
   then a mic key lets you speak instead of type, on-device. A **Delete model** link appears once
   downloaded, to reclaim the space.
 - **Compact keyboard** (off by default) — shorter keys, tighter spacing.
-- **Keyboard layout** — QWERTY, AZERTY, or QWERTZ.
+- **Keyboard layout** — QWERTY, AZERTY, QWERTZ, or **Keypad (T9)**. The keypad puts three letters on
+  a key and works the word out from the digits, correcting a wrong key as it goes. Pick **Multi-tap**
+  under it for the old press-2-three-times-for-C behavior, with no prediction at all.
+- **The globe key** — appears on the bottom row on its own, whenever the phone has more than one
+  keyboard enabled. Tap it to move to the next one.
 
 Layout and appearance changes take effect the next time the keyboard opens.
 
@@ -164,9 +176,84 @@ update because the certificate differs — uninstall the old one first.
 
 ## Version history
 
-Every push to `main` builds, tests, and publishes a signed APK as the next `v1.0.<n>` release (`n` is
+Every push to `main` builds, tests, and publishes a signed APK as the next `v1.1.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v1.1.x** (2026-09-13) — **Four engines instead of one, a delete key that walks every guess, and a
+  twelve-key T9 keypad.**
+
+  Autocorrect used to ask one question: how near is this word to a real one on the keys. That model
+  catches a thumb landing one key over. It is blind to everything else. Three more engines now run
+  beside it, and their answers merge into one ranked list.
+
+  A **sound-alike index** reads the word the way it is said. `nite` finds `night`, `fone` finds
+  `phone`, `enuf` finds `enough`. None of those sit near their target on the keyboard, so the original
+  engine could never reach them. The index is not Metaphone. Metaphone and Soundex match
+  names, and both throw the vowels away. Without vowels, `nite` lands in a bucket with `not`, `net` and
+  `nut`, and the commonest of those wins. This keeps a normalized vowel for every run, which cuts
+  the average bucket from forty words to about five.
+
+  A **missed-space search** reads a word as two. `alot` becomes `a lot`, `inthe` becomes `in the`,
+  `thankyou` becomes `thank you`. A word-at-a-time corrector cannot do this at all. It only ever sees
+  one word, and one word has no space in it to find. English is full of compounds whose halves are
+  both real words. So the search refuses any word the dictionary knows. Without that rule, `nothing`
+  becomes `no thing`.
+
+  A **shortcut table** holds the corrections that are facts rather than search results. Missing
+  apostrophes are most of it here. The apostrophe sits on the symbols layer. Reaching for it costs two
+  taps and a layer switch, so people skip it. `dont` is now `don't`. The
+  table has a second tier that only ever offers. `thx` and `nite` stay exactly as typed, with `thanks`
+  and `night` one delete press away, because someone who writes `thx` means `thx`.
+
+  Two engines reaching the same word independently is strong evidence, and the ranking says so. One
+  measures key distance and the other measures pronunciation, so agreement between them is two kinds of
+  evidence, not two views of one.
+
+  **Autocorrect settings** is a new page. **How much it fixes** has three settings. Cautious commits
+  only clear typos and apostrophes. Balanced adds sound-alikes and missed spaces. Eager commits on a
+  slim margin. The setting changes only what the keyboard commits on its own. Every
+  candidate every engine found stays in the delete key's list at all three. Turning it down makes the
+  keyboard quieter rather than less capable.
+
+  Whether a correction commits at all is now a **margin** over the runner-up, not a score on its own. A
+  correction is safe when it is the only good reading of what you typed. Two plausible readings within
+  a hair of each other mean the keyboard does not know, and the honest move is to leave the word alone.
+
+  **The delete key now walks the alternatives for tapped words too.** It has always done this after a
+  swipe. After a tapped correction it only had a single undo. There was no better reason for that than the
+  age of the two code paths. One press gives the next-best word. Another gives the one after. The last stop is always
+  exactly what you typed. The second new setting, **the delete
+  key**, turns that off for anyone who finds it surprising. **Undo the fix** puts your own spelling
+  back in one press and stops there.
+
+  **A keypad (T9) layout**, next to QWERTY, AZERTY and QWERTZ. Three letters to a key, one tap per
+  letter, and the dictionary works out the word from the digits. The word appears in the sentence as
+  you tap, and every key replaces it in place. You read it where you are writing, not in a list above
+  it. Finishing the word opens the same delete-key list. Every keypad word is ambiguous by
+  construction. Saying "no, the next one" without retyping is what made T9 work at all.
+
+  The keypad corrects as well as matches, which traditional T9 never did. Miss a key there and the word
+  is unreachable. You have to notice, delete and retype. Here one wrong digit still finds the word, so
+  `84663` gives `phone`. A word you type exactly never loses to a corrected one.
+
+  **You can also swipe on the keypad.** A finger cannot express a doubled key, because it is already on
+  it, and this is where every published attempt at gliding on a keypad has stopped. `hello` is
+  `4-3-5-5-6` tapped and `4-3-5-6` traced. The dictionary is indexed under both, so the doubled key
+  stops being a special case.
+
+  **Multi-tap** is there for people who want no prediction at all. Press 2 three times for `c`. It
+  types the letter you pressed and nothing else.
+
+  **A globe key** appears on the bottom row when the phone has more than one keyboard enabled. It is
+  absent when there is nowhere to go. A bottom row is too narrow to spend on a key that does nothing.
+  Tapping it moves to the next keyboard.
+
+  One bug found while testing, worth writing down because nothing crashed. The keypad packs its digit
+  index into a signed 64-bit integer. At the depth it used, the top digit landed on the sign bit.
+  The range search for a leading `8` then came back empty. 8 carries `t`, `u` and `v`. So the first tap of
+  `the`, `to`, `that`, `this` and `time` showed nothing, and the word appeared only on the second tap.
+  Every test passed, because every test used two digits or more.
 
 - **v1.0.x** (2026-08-01) — **A login code arrives in the strip, and closing needs a longer hold.**
   A verification code arrives in one app and is wanted in another, and the walk between them is done

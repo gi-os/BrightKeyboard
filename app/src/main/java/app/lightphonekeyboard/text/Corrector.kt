@@ -65,7 +65,26 @@ class Corrector(
      * Up to [limit] replacements for [typed], best first. Empty when the word should be left alone:
      * it is already a real word, too short to correct safely, or nothing plausible is near it.
      */
-    fun suggest(typed: String, limit: Int = 3, ctx: WordContext = WordContext.NONE): List<String> {
+    fun suggest(typed: String, limit: Int = 3, ctx: WordContext = WordContext.NONE): List<String> =
+        suggest(typed, limit, ctx, withScores = false).map { it.first }
+
+    /**
+     * The same search, keeping each candidate's score.
+     *
+     * [Alternatives] needs the numbers, not just the order: it merges this engine's candidates with
+     * the sound-alike and word-splitting engines', and a merge of three ranked lists with no scores
+     * has no way to decide which list's second place beats another's first. The score is
+     * `ln P(word) − LAMBDA × editCost`, and every other engine reports on that same scale.
+     *
+     * [withScores] changes nothing about the search — it exists only so the common path can keep
+     * returning plain strings without allocating a pair per candidate.
+     */
+    fun suggest(
+        typed: String,
+        limit: Int,
+        ctx: WordContext,
+        withScores: Boolean,
+    ): List<Pair<String, Float>> {
         val w = typed.lowercase()
         val n = w.length
         if (n < MIN_LENGTH || n > MAX_LENGTH) return emptyList()
@@ -92,10 +111,14 @@ class Corrector(
         val heap = TopK(pool)
         scan(dict, MAIN, w, n, typedMask, maxLetterMismatch, budget, heap)
         userWords.dictionary?.let { scan(it, USER, w, n, typedMask, maxLetterMismatch, budget, heap) }
-        return ContextRanker.rerank(
-            heap.words(dict, userWords), ctx.left, context, limit,
+        val found = heap.scoredWords(dict, userWords)
+        val ranked = ContextRanker.rerank(
+            found.map { it.first }, ctx.left, context, limit,
             ContextRanker.MAX_SHIFT_CORRECTION,
         )
+        if (!withScores) return ranked.map { it to 0f }
+        val byWord = found.toMap()
+        return ranked.mapNotNull { word -> byWord[word]?.let { word to it } }
     }
 
     /** Score every plausible candidate in [source] into [heap]. Shared by the bundled and user lists. */
@@ -220,19 +243,18 @@ class Corrector(
             score[p] = s; idx[p] = i; src[p] = tag
         }
 
-        fun words(dict: Dictionary, user: UserWords): List<String> {
-            val out = ArrayList<String>(limit)
+        fun scoredWords(dict: Dictionary, user: UserWords): List<Pair<String, Float>> {
+            val out = ArrayList<Pair<String, Float>>(limit)
             for (k in 0 until limit) {
                 if (idx[k] < 0) continue
-                out.add(
-                    if (src[k] == USER) {
-                        // Give back the capitalisation the user typed — the point of adding a name.
-                        val w = user.dictionary?.word(idx[k]) ?: continue
-                        user.displayOf(w)
-                    } else {
-                        dict.word(idx[k])
-                    },
-                )
+                val word = if (src[k] == USER) {
+                    // Give back the capitalisation the user typed — the point of adding a name.
+                    val w = user.dictionary?.word(idx[k]) ?: continue
+                    user.displayOf(w)
+                } else {
+                    dict.word(idx[k])
+                }
+                out.add(word to score[k])
             }
             return out
         }
