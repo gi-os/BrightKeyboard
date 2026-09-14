@@ -55,9 +55,9 @@ jobs:
           # versionCode must strictly increase for Android to accept an update; the run number does
           # that for free. versionName is kept equal to the release tag so Obtainium compares like
           # with like — a mismatch there shows as a permanent phantom "update available".
-          # Minor bumped to 1.1 for the multi-engine autocorrect and the T9 keypad. CI reads only
+          # Minor bumped to 1.2 for the full emoji panel and the swipe decoder. CI reads only
           # major.minor from here, so this line is where a feature release is declared.
-          echo "name=1.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "name=1.2.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       # The typing logic (dictionary, autocorrect, swipe decoding) is pure Kotlin with no Android

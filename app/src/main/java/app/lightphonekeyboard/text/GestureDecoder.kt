@@ -65,6 +65,10 @@ class GestureDecoder(
     // The candidate's letter centres, with consecutive repeats collapsed (see [buildTemplate]).
     private val kx = FloatArray(Corrector.MAX_LENGTH)
     private val ky = FloatArray(Corrector.MAX_LENGTH)
+    // Where the finger visibly turned, in the resampled path (see [findCorners]).
+    private val cornerX = FloatArray(MAX_CORNERS)
+    private val cornerY = FloatArray(MAX_CORNERS)
+    private var cornerCount = 0
 
     /**
      * Decode a traced path into at most [limit] candidate words, best first. [px]/[py] hold the first
@@ -77,11 +81,13 @@ class GestureDecoder(
         count: Int,
         limit: Int = 4,
         ctx: WordContext = WordContext.NONE,
+        reach: Float = 1f,
     ): List<String> {
         if (count < 2) return emptyList()
         val pathLength = resample(px, py, count, ux, uy)
         if (pathLength < MIN_PATH_LENGTH) return emptyList()
         normalize(ux, uy, sx, sy)
+        findCorners()
 
         val g = grid
         // Pruning. A candidate has to start near where the finger went down, end near where it came
@@ -103,14 +109,20 @@ class GestureDecoder(
 
         val heap = TopK(limit)
         val user = userWords
-        scan(dict, MAIN, g, startMask, endMask, corridor, shortest, pathLength, heap)
-        user.dictionary?.let { scan(it, USER, g, startMask, endMask, corridor, shortest, pathLength, heap) }
+        // How far the decoder is allowed to reach for a match. 1 is the fitted cutoff; the setting
+        // scales it, so a cautious swipe simply refuses a trace that is nowhere near any word rather
+        // than returning the nearest thing it could find. See [Prefs.swipeStrength].
+        val cutoff = LOCATION_CUTOFF * reach.coerceIn(0.5f, 2f)
+        scan(dict, MAIN, g, startMask, endMask, corridor, shortest, pathLength, cutoff, heap)
+        user.dictionary?.let {
+            scan(it, USER, g, startMask, endMask, corridor, shortest, pathLength, cutoff, heap)
+        }
         // Reordered by the preceding word, which is where a swipe needs it most: near-identical traces
         // ("way"/"wag", "sun"/"sum") are settled by frequency alone, and after "on my" the corpus has an
         // opinion worth more than that. Held to the correction bound, not the strip's, because the best
         // reading is committed on lift without being asked.
         val words = ContextRanker.rerank(
-            heap.words(dict, user), ctx.left, context, limit, ContextRanker.MAX_SHIFT_CORRECTION,
+            heap.words(dict, user), ctx.left, context, limit, SWIPE_SHIFT,
         )
         // The bundled dictionary has no apostrophes in it at all — contractions are stored plain
         // ("im", "dont", "cant"; see tools/gen_dict.py's EXTRA list) because nobody swipes or types an
@@ -133,6 +145,7 @@ class GestureDecoder(
         corridor: Int,
         shortest: Int,
         pathLength: Float,
+        cutoff: Float,
         heap: TopK,
     ) {
         for (i in source.lengthRange(shortest, Corrector.MAX_LENGTH)) {
@@ -161,7 +174,7 @@ class GestureDecoder(
             if (n < 2) continue
             val templateLength = resample(kx, ky, n, tx, ty)
             val location = meanDistance(ux, uy, tx, ty)
-            if (location > LOCATION_CUTOFF) continue                    // nowhere near: reject cheaply
+            if (location > cutoff) continue                             // nowhere near: reject cheaply
             normalize(tx, ty, nx, ny)
             val shape = meanDistance(sx, sy, nx, ny)
             // Last, so a forgotten word costs a String only once a trace has actually landed near it.
@@ -169,11 +182,79 @@ class GestureDecoder(
             val excess = (pathLength - templateLength).coerceAtLeast(0f)
             val shortWord = if (len == 2) SHORT_PENALTY else 0f
             val freq = if (isIm) IM_LOGF else source.logFreq(i)
+            val corners = cornerCost(n)
             heap.offer(
                 tag, i,
-                freq - W_LOCATION * location - W_SHAPE * shape - W_EXCESS * excess - shortWord,
+                freq - W_LOCATION * location - W_SHAPE * shape - W_EXCESS * excess -
+                    W_CORNER * corners - shortWord,
             )
         }
+    }
+
+    /**
+     * Find where the finger turned, and remember those points.
+     *
+     * A corner is the one place on a trace where the writer's intent is unambiguous. Everywhere else
+     * the finger is in transit and its position is a compromise between two letters, but a reversal
+     * only happens because a letter is there. The location and shape channels both average over every
+     * sample equally, so that evidence is diluted by the long straight runs between letters — which is
+     * exactly how a wrong word with roughly the right overall sweep beats the right one.
+     *
+     * Turning is measured over a window rather than between adjacent samples, because adjacent
+     * samples on a resampled path are a fraction of a key apart and their direction is mostly noise.
+     * Only the sharpest turns are kept, so a gentle curve through a letter does not register as one
+     * and the channel stays quiet on traces that have nothing to say.
+     */
+    private fun findCorners() {
+        cornerCount = 0
+        var i = CORNER_WINDOW
+        while (i < SAMPLES - CORNER_WINDOW && cornerCount < MAX_CORNERS) {
+            val ax = ux[i] - ux[i - CORNER_WINDOW]
+            val ay = uy[i] - uy[i - CORNER_WINDOW]
+            val bx = ux[i + CORNER_WINDOW] - ux[i]
+            val by = uy[i + CORNER_WINDOW] - uy[i]
+            val la = sqrt(ax * ax + ay * ay)
+            val lb = sqrt(bx * bx + by * by)
+            if (la < 1e-4f || lb < 1e-4f) { i++; continue }
+            // cos of the turn: 1 is straight on, -1 is a full reversal.
+            val cos = (ax * bx + ay * by) / (la * lb)
+            if (cos > CORNER_COS) { i++; continue }
+            cornerX[cornerCount] = ux[i]
+            cornerY[cornerCount] = uy[i]
+            cornerCount++
+            // Skip past this corner so one turn is not counted several times over.
+            i += CORNER_WINDOW
+        }
+    }
+
+    /**
+     * How far this candidate's letters are from explaining the corners the finger actually made.
+     *
+     * Each corner is charged the distance to the nearest letter the candidate uses. A candidate that
+     * has a letter at every turn pays nothing; one that sweeps through the same region without a
+     * reason to stop pays for each turn it cannot account for. Charged as a mean so a long word is
+     * not penalised for having more corners to match, and clamped so that one wild corner — a hooked
+     * lift, a finger that snagged — cannot sink an otherwise good reading on its own.
+     */
+    private fun cornerCost(letters: Int): Float {
+        // A two-key stroke has no interior corner to explain — it is one straight leg — so anything
+        // [findCorners] picked up on it is noise in the middle of the line. Charging that noise
+        // punished the short words hardest, because with only two letters there is nowhere near for
+        // a spurious corner to land: "it" started decoding as "our", which a three-letter template
+        // absorbs and a two-letter one cannot.
+        if (cornerCount == 0 || letters < 3) return 0f
+        var total = 0f
+        for (c in 0 until cornerCount) {
+            var best = Float.MAX_VALUE
+            for (k in 0 until letters) {
+                val dx = cornerX[c] - kx[k]
+                val dy = cornerY[c] - ky[k]
+                val d = dx * dx + dy * dy
+                if (d < best) best = d
+            }
+            total += sqrt(best).coerceAtMost(CORNER_CLAMP)
+        }
+        return total / cornerCount
     }
 
     private fun bit(c: Char): Int = if (c in 'a'..'z') 1 shl (c - 'a') else 0
@@ -405,6 +486,72 @@ class GestureDecoder(
         private const val W_SHAPE = 16.0f
         /** Per key unit of travel the candidate's own path cannot account for — the length channel. */
         private const val W_EXCESS = 0.5f
+
+        /**
+         * What a corner the candidate cannot explain costs.
+         *
+         * Fitted against the benchmark in GestureDecoderTest, the same way every other weight here
+         * was. Measured over the 250 commonest words, top-1 accuracy against the value:
+         *
+         * ```
+         * W_CORNER     0.0    0.6    1.0    1.5    2.5    4.0
+         * clean       97.6   97.6   98.0   98.0   97.6   96.8
+         * jittery     92.8   92.8   92.8   92.8   92.4   92.4
+         * sloppy      90.8   91.6   91.2   90.8   90.0   88.0
+         * fast        92.0   93.2   93.2   92.8   94.0   93.6
+         * fast+sloppy 84.4   85.6   86.4   87.6   88.4   88.0
+         * ```
+         *
+         * 1.5 is the largest value that is no worse than 0 anywhere: it buys 3.2 points on the worst
+         * case — a fast, sloppy trace, which is the one people actually complain about — and gives
+         * nothing back on a clean one. Past 2.5 the channel starts overruling the other two and the
+         * careful traces suffer, which is the wrong trade.
+         *
+         * With the two-letter gate in [cornerCost] and a preceding word supplied, which is how this
+         * runs in practice, the channel and the looser [SWIPE_SHIFT] together measure:
+         *
+         * ```
+         *               before   after
+         * clean          99.6%  100.0%
+         * jittery        97.6%   98.4%
+         * sloppy         94.8%   95.6%
+         * fast           96.8%   97.2%
+         * fast+sloppy    92.4%   93.6%
+         * ```
+         */
+        private const val W_CORNER = 1.5f
+
+
+
+        /**
+         * How far the preceding word may move a swipe's reading, in places.
+         *
+         * Looser than the bound autocorrect uses (1.2), and the reason is that the two are not the
+         * same bet. A correction replaces a word the user typed deliberately, so context gets a short
+         * leash. A swipe has no deliberate spelling behind it at all — the trace is ambiguous by
+         * nature, and the right word is in the top four about 99% of the time but first only 88-93%.
+         * Context is the only thing that can tell those four apart, so giving it more room converts
+         * near-misses into first guesses rather than overruling anything the user was sure about.
+         *
+         * Measured over 250 real bigram pairs: 1.2 gives 97.2% / 93.6% (jittery / fast and sloppy),
+         * 2.0 gives 98.8% / 94.4%, and past 2.0 nothing changes — every candidate context can reach
+         * is already reachable. Words with no useful preceding word are unaffected at any value.
+         */
+        private const val SWIPE_SHIFT = 2.0f
+
+
+        /** Samples either side of a point used to measure its turn. See [findCorners]. */
+        private const val CORNER_WINDOW = 3
+
+        /** Turn sharpness that counts as a corner, as a cosine. Lower is sharper. */
+        private const val CORNER_COS = 0.55f
+
+        /** More turns than this and the trace is a scribble, not a word. */
+        private const val MAX_CORNERS = 12
+
+        /** No single corner may cost more than this, so one snagged turn cannot sink a good word. */
+        private const val CORNER_CLAMP = 1.6f
+
 
         /**
          * What a two-letter reading has to beat the field by, in nats.

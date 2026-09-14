@@ -104,6 +104,18 @@ class LightKeyboardView @JvmOverloads constructor(
          * falls back to the picker when there is no sensible "next" to go to.
          */
         fun onSwitchInput()
+
+        /**
+         * The search key in the emoji panel.
+         *
+         * The host takes it from here: this view has no text field and no room for one, so a search
+         * borrows the letter keys and the query lives in the host, which is the only part that can
+         * see the document. It feeds results back through [showEmojiSearch] and [setSearchQuery].
+         */
+        fun onEmojiSearch()
+
+        /** The panel was left or reopened, so any running search has to be abandoned. */
+        fun onEmojiPanelClosed()
         /** Listening surface tapped — cancel dictation. */
         fun onMicCancel()
 
@@ -136,6 +148,25 @@ class LightKeyboardView @JvmOverloads constructor(
         const val ENTER = "__ENTER__"
         const val EMOJI = "__EMOJI__"
         const val EMOJI_BACK = "__EMOJI_BACK__"
+
+        /** Opens emoji search: the letters come back and the strip becomes the results row. */
+        const val EMOJI_SEARCH = "__EMOJI_SEARCH__"
+
+        /** Jump the grid to a category. The suffix is the group index. */
+        const val EMOJI_CAT_PREFIX = "__EMOJI_CAT_"
+        fun emojiCat(g: Int) = "$EMOJI_CAT_PREFIX${g}__"
+        fun isEmojiCat(id: String) = id.startsWith(EMOJI_CAT_PREFIX)
+        fun emojiCatIndex(id: String): Int =
+            if (isEmojiCat(id)) id.substring(EMOJI_CAT_PREFIX.length, id.length - 2).toIntOrNull() ?: -1
+            else -1
+
+        /** One cell of the emoji grid. The suffix is the cell number, not a glyph. */
+        const val EMOJI_CELL_PREFIX = "__EMOJI_AT_"
+        fun emojiCell(i: Int) = "$EMOJI_CELL_PREFIX${i}__"
+        fun isEmojiCell(id: String) = id.startsWith(EMOJI_CELL_PREFIX)
+        fun emojiCellIndex(id: String): Int =
+            if (isEmojiCell(id)) id.substring(EMOJI_CELL_PREFIX.length, id.length - 2).toIntOrNull() ?: -1
+            else -1
         const val MIC = "__MIC__"
 
         /**
@@ -209,11 +240,6 @@ class LightKeyboardView @JvmOverloads constructor(
             listOf("_", "\\", "|", "~", "<", ">", "€", "£", "¥"),
             listOf(Key.SYMBOLS, ".", ",", "?", "!", "'", Key.BACKSPACE),
             listOf(Key.LETTERS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
-        )
-        val emoji = listOf(
-            "😅", "😊", "🙃", "😍", "😜", "😂", "😭", "😎",
-            "🙌", "👍", "👎", "🤞", "✌️", "👌", "👋", "🙏",
-            "✨", "🔥", "❤️", "💔", "🏆", "🎯", "👑", "👀",
         )
     }
 
@@ -336,8 +362,14 @@ class LightKeyboardView @JvmOverloads constructor(
         // keyboard is a clone of a design that has no suggestion bar at all, so the less of one it adds
         // the better. Off by default for the same reason.
         stripTextSize = spf(if (compact) 11 else 12)
-        stripH = if (suggestionsOn) dpf(if (compact) 20 else 24) else 0f
+        stripFullH = dpf(if (compact) 20 else 24)
+        stripH = if (stripShowing) stripFullH else 0f
 
+        // An overlay or a half-finished emoji gesture must not survive a new field. The picker is
+        // modal and only the emoji layer can dismiss it, so one left open while the layer goes back
+        // to letters paints a black band over the second key row that nothing can clear.
+        variantGlyphs = emptyList()
+        clearEmojiGesture()
         keyLayout = Prefs.keyLayout(context)
         autoPeriod = Prefs.autoPeriod(context)
         swipeTyping = Prefs.swipeTyping(context)
@@ -369,14 +401,49 @@ class LightKeyboardView @JvmOverloads constructor(
         false
     }
 
+    /** The emoji table, the font filter, the recents and the current query. See [EmojiPanel]. */
+    val emojiPanel = EmojiPanel(context).apply {
+        onReady = {
+            // Straight off the load thread, so hop to the UI thread. Without this the panel keeps
+            // showing "Loading…" until it is closed and reopened: an empty grid has no keys to
+            // receive the touch that would otherwise have rebuilt it.
+            post {
+                emojiCategoryIcons = categoryIcons()
+                if (layer == Layer.EMOJI) rebuild()
+            }
+        }
+    }
+
+    /** How far the grid is scrolled, in pixels. Always >= 0 and clamped to the content height. */
+    private var emojiScroll = 0f
+
+    /** The glyphs currently in the grid, recomputed whenever the panel's state changes. */
+    private var emojiGlyphs: List<String> = emptyList()
+
+    /** The cell a finger went down on, or -1. Emoji commit on UP, because a drag here is a scroll. */
+    private var pressedEmojiCell = -1
+
+    /** Set once a drag has become a scroll, so the lift does not also insert an emoji. */
+    private var emojiScrolling = false
+
+    /** Variants of the held cell, shown as an overlay row over the grid. Empty when closed. */
+    private var variantGlyphs: List<String> = emptyList()
+
     private val emojiCols = 8
-    private val emojiRowCount = (Layout.emoji.size + emojiCols - 1) / emojiCols  // 24 / 8 = 3
+    /** Glyph rows on screen at once. Three, leaving the fourth band for the control row. */
+    private val emojiRowCount = 3
 
     // --- paints / icon cache ---
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
     }
+    /** Solid black behind the variant row, so the grid cannot show through the picker. */
+    private val variantBackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.FILL
+    }
+
     private val spacePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val pressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 255, 255, 255) }
     private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(60, 255, 255, 255) }
@@ -543,46 +610,186 @@ class LightKeyboardView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * The emoji panel: three scrolling rows of glyphs over one row of controls.
+     *
+     * Same vertical metrics as the letter layers (padTop / rowPitch / rowKeyH), so the panel is
+     * exactly as tall as the keyboard and switching to it never resizes anything.
+     *
+     * **Only the visible rows are placed.** The grid is 1,761 emoji, which is 220 rows; building a
+     * PlacedKey for every one of them on every scroll frame would be 1,761 objects per frame, and
+     * [placed] is walked linearly by both hit-testing and drawing. Placing the window that is on
+     * screen keeps both of those at two dozen entries no matter how far down the list goes.
+     */
     private fun layoutEmoji() {
-        // Same vertical metrics as the letter layers (padTop / rowPitch / rowKeyH), so the emoji panel
-        // is the exact same height and switching layers never resizes the keyboard.
         val w = width.toFloat()
-        val h = height.toFloat()
         val drawW = w - padSide * 2
-        val rows = Layout.emoji.chunked(emojiCols)
         val top = stripTop
-        for (i in rows.indices) {
-            val bandTop = if (i == 0) top else top + padTop + i * rowPitch
-            val bandBottom = top + padTop + (i + 1) * rowPitch
-            val visTop = top + padTop + i * rowPitch + keyGap
-            val visBottom = visTop + rowKeyH
-            rows[i].forEachIndexed { j, glyph ->
-                val cellLeft = padSide + drawW * (j.toFloat() / emojiCols)
-                val cellRight = padSide + drawW * ((j + 1).toFloat() / emojiCols)
-                val hitLeft = if (j == 0) 0f else cellLeft
-                val hitRight = if (j == emojiCols - 1) w else cellRight
+        emojiGlyphs = emojiPanel.glyphs()
+
+        // Three glyph rows, one control row — the same four bands the letter layers use.
+        val visibleRows = (emojiRowCount).coerceAtLeast(1)
+        val gridBottom = top + padTop + visibleRows * rowPitch
+        clampEmojiScroll(visibleRows)
+
+        val firstRow = (emojiScroll / rowPitch).toInt().coerceAtLeast(0)
+        val offset = emojiScroll - firstRow * rowPitch
+        // One row past the bottom, so a half-scrolled row is drawn rather than popping in.
+        for (r in firstRow until firstRow + visibleRows + 1) {
+            val rowTop = top + padTop + (r - firstRow) * rowPitch - offset
+            val visTop = rowTop + keyGap
+            if (visTop >= gridBottom) break
+            for (c in 0 until emojiCols) {
+                val cell = r * emojiCols + c
+                if (cell >= emojiGlyphs.size) break
+                val cellLeft = padSide + drawW * (c.toFloat() / emojiCols)
+                val cellRight = padSide + drawW * ((c + 1).toFloat() / emojiCols)
+                val hitLeft = if (c == 0) 0f else cellLeft
+                val hitRight = if (c == emojiCols - 1) w else cellRight
+                // Clipped to the grid band so a partially scrolled row cannot be tapped where it
+                // overlaps the controls, and cannot be drawn over them either.
+                val visBottom = (visTop + rowKeyH).coerceAtMost(gridBottom)
+                if (visBottom - visTop < rowKeyH * 0.35f) continue
                 placed.add(
                     PlacedKey(
-                        glyph,
-                        RectF(hitLeft, bandTop, hitRight, bandBottom),
+                        Key.emojiCell(cell),
+                        RectF(hitLeft, rowTop.coerceAtLeast(top), hitRight, visBottom),
                         RectF(cellLeft, visTop, cellRight, visBottom),
                     ),
                 )
             }
         }
-        // Back-to-letters chevron: its own row band (hit spans the full width), drawn as a centered chevron.
-        val backTop = top + padTop + rows.size * rowPitch
-        val boxW = dpf(64)
-        val boxH = rowKeyH
-        val cx = w / 2f
-        val cy = backTop + keyGap + rowKeyH / 2f
-        placed.add(
-            PlacedKey(
-                Key.EMOJI_BACK,
-                RectF(0f, backTop, w, h),
-                RectF(cx - boxW / 2f, cy - boxH / 2f, cx + boxW / 2f, cy + boxH / 2f),
-            ),
-        )
+
+        layoutEmojiControls(w, drawW, gridBottom)
+    }
+
+    /**
+     * The control row: back, a jump button per category, and search.
+     *
+     * Back and search are the two that have to be hittable under any circumstances, so they are the
+     * only ones given extra width. The categories share what is left equally — they are forgiving
+     * targets, since the grid scrolls from wherever a jump lands.
+     */
+    private fun layoutEmojiControls(w: Float, drawW: Float, gridBottom: Float) {
+        val h = height.toFloat()
+        val rowTop = gridBottom
+        val visTop = rowTop + keyGap
+        val visBottom = visTop + rowKeyH
+        val cats = emojiPanel.groups.size
+
+        val ids = ArrayList<String>(cats + 2)
+        val weights = ArrayList<Float>(cats + 2)
+        ids.add(Key.EMOJI_BACK); weights.add(1.5f)
+        for (g in 0 until cats) { ids.add(Key.emojiCat(g)); weights.add(1f) }
+        ids.add(Key.EMOJI_SEARCH); weights.add(1.5f)
+
+        val total = weights.sum()
+        var x = padSide
+        for (k in ids.indices) {
+            val cw = drawW * (weights[k] / total)
+            val hitLeft = if (k == 0) 0f else x
+            val hitRight = if (k == ids.size - 1) w else x + cw
+            placed.add(
+                PlacedKey(
+                    ids[k],
+                    RectF(hitLeft, rowTop, hitRight, h),
+                    RectF(x, visTop, x + cw, visBottom),
+                ),
+            )
+            x += cw
+        }
+    }
+
+    /** Category icons, cached — [EmojiPanel.categoryIcons] allocates and the draw path is hot. */
+    private var emojiCategoryIcons: List<String> = emptyList()
+
+    /**
+     * Show the panel, from the top, with fresh settings and recents.
+     *
+     * Scroll is reset on every open rather than remembered. The recents sit at the top, so opening
+     * where you left off would mean opening halfway down the flags — and the emoji somebody wants
+     * next is far more often one they used recently than one near where they stopped scrolling.
+     */
+    private fun openEmoji() {
+        listener?.onEmojiPanelClosed()
+        emojiPanel.reload()
+        emojiPanel.search("")
+        emojiCategoryIcons = emojiPanel.categoryIcons()
+        emojiScroll = 0f
+        variantGlyphs = emptyList()
+        pressedEmojiCell = -1
+        layer = Layer.EMOJI
+        rebuild()
+    }
+
+    private fun closeEmoji() {
+        listener?.onEmojiPanelClosed()
+        variantGlyphs = emptyList()
+        pressedEmojiCell = -1
+        emojiPanel.search("")
+        layer = Layer.LETTERS
+        rebuild()
+    }
+
+    /** Back to the letters, leaving any search query alone. Used by the search flow. */
+    fun showLetters() {
+        // Cleared before the early return, not after it: the overlay can be open while the layer has
+        // already gone back to letters, and that combination is exactly the one that wedges.
+        variantGlyphs = emptyList()
+        clearEmojiGesture()
+        if (layer == Layer.LETTERS) return
+        layer = Layer.LETTERS
+        rebuild()
+    }
+
+    /**
+     * The query to show in the strip while an emoji search is running, or null to stop showing one.
+     *
+     * The strip is the only place a query can be seen: it is deliberately not in the document, so
+     * without this the user would be typing blind.
+     */
+    fun setSearchQuery(query: String?) {
+        if (searchQuery == query) return
+        val wasShowing = stripShowing
+        searchQuery = query
+        // The strip has to appear for the query even when it is switched off, and go away again
+        // afterwards. Recomputed here rather than left to applyPrefs, which only runs on reset() —
+        // so for the default user, whose strip is off, the query was invisible and they were
+        // searching blind, which is the one thing keeping the query out of the document requires.
+        stripH = if (stripShowing) stripFullH else 0f
+        if (wasShowing != stripShowing) rebuild() else invalidate()
+    }
+
+    private var searchQuery: String? = null
+
+    /** The strip's height when it is shown at all, so [setSearchQuery] can restore it. */
+    private var stripFullH = 0f
+
+    /** The strip is up for the suggestions setting, or because a search needs somewhere to appear. */
+    private val stripShowing: Boolean get() = suggestionsOn || searchQuery != null
+
+    /** Put the panel back on screen showing [query]'s results. Used by the search flow. */
+    fun showEmojiSearch(query: String) {
+        emojiPanel.reload()
+        emojiPanel.search(query)
+        emojiCategoryIcons = emojiPanel.categoryIcons()
+        emojiScroll = 0f
+        variantGlyphs = emptyList()
+        layer = Layer.EMOJI
+        rebuild()
+    }
+
+    /** Keep the scroll inside the content, so the grid cannot be flung into empty space. */
+    private fun clampEmojiScroll(visibleRows: Int) {
+        val rows = (emojiGlyphs.size + emojiCols - 1) / emojiCols
+        val maxScroll = ((rows - visibleRows) * rowPitch).coerceAtLeast(0f)
+        emojiScroll = emojiScroll.coerceIn(0f, maxScroll)
+    }
+
+    /** Scroll so that [cell] is the first row on screen. Used by the category jumps. */
+    private fun scrollEmojiTo(cell: Int) {
+        emojiScroll = (cell / emojiCols) * rowPitch
+        rebuild()
     }
 
     // ------------------------------------------------------------------ drawing
@@ -591,12 +798,16 @@ class LightKeyboardView @JvmOverloads constructor(
         super.onDraw(canvas)
         if (listening) { drawListening(canvas); return }
         for (pk in placed) {
-            if (pressed.containsValue(pk)) {
+            val down = pressed.containsValue(pk) ||
+                (pressedEmojiCell >= 0 && pk.id == Key.emojiCell(pressedEmojiCell))
+            if (down) {
                 val r = dpf(8)
                 canvas.drawRoundRect(pk.vis, r, r, pressPaint)
             }
             drawKey(canvas, pk)
         }
+        if (layer == Layer.EMOJI && variantGlyphs.isNotEmpty()) drawVariantRow(canvas)
+        if (layer == Layer.EMOJI && emojiGlyphs.isEmpty()) drawEmojiEmpty(canvas)
         if (stripH > 0f) drawStrip(canvas)
         if (tracing) drawTrail(canvas)
     }
@@ -609,6 +820,15 @@ class LightKeyboardView @JvmOverloads constructor(
      * as soon as a word became suggestible. Its height is fixed for as long as the setting is on.
      */
     private fun drawStrip(canvas: Canvas) {
+        // While a search is running the strip is the only place the query can be read, because the
+        // query is deliberately kept out of the document. It takes the whole strip, not a slot.
+        searchQuery?.let { q ->
+            textPaint.textSize = stripTextSize
+            val baseline = stripH / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
+            val shown = if (q.isEmpty()) context.getString(R.string.emoji_search_hint) else "$q…"
+            canvas.drawText(fitToWidth(shown, width - dpf(20)), width / 2f, baseline, textPaint)
+            return
+        }
         val slotW = width / Suggester.SLOTS.toFloat()
         if (pressedSuggestion in 0 until Suggester.SLOTS && suggestionAt(pressedSuggestion) != null) {
             canvas.drawRect(
@@ -716,10 +936,81 @@ class LightKeyboardView @JvmOverloads constructor(
             return
         }
         if (Key.isPad(id)) { drawPadKey(canvas, pk); return }
+        if (Key.isEmojiCell(id)) {
+            val glyph = emojiGlyphs.getOrNull(Key.emojiCellIndex(id)) ?: return
+            textPaint.textSize = emojiTextSize
+            val base = pk.vis.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f
+            canvas.drawText(glyph, pk.vis.centerX(), base, textPaint)
+            return
+        }
+        if (Key.isEmojiCat(id)) { drawEmojiCategory(canvas, pk); return }
         val size = if (layer == Layer.EMOJI) emojiTextSize else if (id.length == 1) keyTextSize else labelTextSize
         textPaint.textSize = size
         val baseline = pk.vis.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f
         canvas.drawText(labelFor(id), pk.vis.centerX(), baseline, textPaint)
+    }
+
+    /**
+     * A category jump button: the first emoji of that group, with the current one underlined.
+     *
+     * Drawn from the data rather than from a hardcoded icon per category, so a group whose usual
+     * icon is missing from this phone's font still gets a button with something legible on it.
+     */
+    private fun drawEmojiCategory(canvas: Canvas, pk: PlacedKey) {
+        val g = Key.emojiCatIndex(pk.id)
+        val icon = emojiCategoryIcons.getOrNull(g) ?: return
+        textPaint.textSize = emojiTextSize * 0.62f
+        val base = pk.vis.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f
+        canvas.drawText(icon, pk.vis.centerX(), base, textPaint)
+        if (g == currentEmojiGroup()) {
+            val cx = pk.vis.centerX()
+            val y = pk.vis.bottom - dpf(2)
+            canvas.drawRect(cx - dpf(7), y - dpf(1), cx + dpf(7), y + dpf(1), spacePaint)
+        }
+    }
+
+    /** Which category the top of the grid is currently sitting in. */
+    private fun currentEmojiGroup(): Int {
+        val firstCell = (emojiScroll / rowPitch).toInt() * emojiCols
+        return emojiPanel.groupOfCell(firstCell)
+    }
+
+    /**
+     * The variant row: every skin tone and gendered form of the held emoji, over a solid band.
+     *
+     * Opaque rather than translucent, and it covers the grid row behind it completely, because a
+     * picker you can see emoji through is a picker whose targets are ambiguous — and this one is
+     * modal, so everything behind it is untappable anyway.
+     */
+    private fun drawVariantRow(canvas: Canvas) {
+        val r = variantRowRect()
+        canvas.drawRect(r, variantBackPaint)
+        val n = variantGlyphs.size.coerceAtMost(emojiCols)
+        val cw = r.width() / n
+        textPaint.textSize = emojiTextSize
+        val base = r.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f
+        for (k in 0 until n) {
+            canvas.drawText(variantGlyphs[k], r.left + cw * (k + 0.5f), base, textPaint)
+        }
+        // A hairline under the band, so it reads as sitting above the grid rather than cut into it.
+        canvas.drawRect(r.left, r.bottom - dpf(1), r.right, r.bottom, spacePaint)
+    }
+
+    /**
+     * What the panel says when it has nothing to show: still loading, or a search that found nothing.
+     *
+     * Worth the few lines. An empty grid with no explanation looks broken, and the two reasons it can
+     * be empty want opposite responses from the user — wait a moment, or type something else.
+     */
+    private fun drawEmojiEmpty(canvas: Canvas) {
+        val message = when {
+            emojiPanel.searchedAndFoundNothing() -> context.getString(R.string.emoji_none)
+            !emojiPanel.ready -> context.getString(R.string.emoji_loading)
+            else -> return
+        }
+        textPaint.textSize = labelTextSize
+        val cy = stripTop + padTop + rowPitch
+        canvas.drawText(message, width / 2f, cy, textPaint)
     }
 
     private fun drawIcon(canvas: Canvas, res: Int, vis: RectF, pad: Float) {
@@ -738,6 +1029,7 @@ class LightKeyboardView @JvmOverloads constructor(
         Key.EMOJI_BACK -> R.drawable.ic_kb_chevron_down
         Key.MIC -> R.drawable.ic_kb_mic
         Key.GLOBE -> R.drawable.ic_kb_globe
+        Key.EMOJI_SEARCH -> R.drawable.ic_kb_search
         Key.SHIFT -> if (shifted) R.drawable.ic_kb_chevron_down else R.drawable.ic_kb_chevron_up
         else -> null
     }
@@ -798,6 +1090,8 @@ class LightKeyboardView @JvmOverloads constructor(
             if (ev.actionMasked == MotionEvent.ACTION_DOWN) { tap(); listener?.onMicCancel() }
             return true
         }
+        // The emoji grid scrolls, so it owns its own gestures. See [onEmojiTouch].
+        if (layer == Layer.EMOJI && onEmojiTouch(ev)) return true
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = ev.x
@@ -864,6 +1158,7 @@ class LightKeyboardView @JvmOverloads constructor(
                         if (held && verticalDrag && (dy > dpf(30) || (vy > dpf(900) && dy > dpf(14)))) {
                             dismissedThisGesture = true
                             stopBackspaceRepeat()
+                            removeCallbacks(emojiKeyHold)
                             // The first tap already committed a char on down; retract it so the swipe
                             // doesn't leave a stray letter behind.
                             if (firstKeyRetractable) listener?.onBackspace()
@@ -882,6 +1177,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 val pid = ev.getPointerId(ev.actionIndex)
                 pressed.remove(pid)
                 if (pid == backspacePointerId) stopBackspaceRepeat()
+                removeCallbacks(emojiKeyHold)
                 invalidate()
             }
 
@@ -890,6 +1186,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 pressedSuggestion = -1
                 pressed.clear()
                 stopBackspaceRepeat()
+                removeCallbacks(emojiKeyHold)
                 removeCallbacks(suggestionHold)
                 velocityTracker?.recycle()
                 velocityTracker = null
@@ -911,6 +1208,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 suggestionForgotten = false
                 pressed.clear()
                 stopBackspaceRepeat()
+                removeCallbacks(emojiKeyHold)
                 removeCallbacks(suggestionHold)
                 velocityTracker?.recycle()
                 velocityTracker = null
@@ -930,6 +1228,7 @@ class LightKeyboardView @JvmOverloads constructor(
         pressed[pointerId] = key
         invalidate()
         val retractable = onKey(key.id)
+        if (key.id == Key.EMOJI) armEmojiKeyHold()
         if (key.id == Key.BACKSPACE) {           // first delete fired on down; now arm the repeat
             backspacePointerId = pointerId
             backspaceDownMs = System.currentTimeMillis()
@@ -937,6 +1236,22 @@ class LightKeyboardView @JvmOverloads constructor(
             postDelayed(backspaceRepeat, BACKSPACE_INITIAL_DELAY_MS)
         }
         return retractable
+    }
+
+    /**
+     * Held on the emoji key: hand over to another keyboard.
+     *
+     * The panel has already opened by the time this fires, because keys in this view commit on
+     * touch-down. That does not matter here and is why the hold is possible at all — switching
+     * replaces this whole view, so whatever it was showing goes with it. The globe key does the same
+     * job, but only appears when more than one keyboard is enabled and can be switched off, so this
+     * is the route that is always there.
+     */
+    private val emojiKeyHold = Runnable { listener?.onSwitchInput() }
+
+    private fun armEmojiKeyHold() {
+        removeCallbacks(emojiKeyHold)
+        postDelayed(emojiKeyHold, SUGGESTION_HOLD_MS)
     }
 
     private fun stopBackspaceRepeat() {
@@ -1090,6 +1405,187 @@ class LightKeyboardView @JvmOverloads constructor(
 
     /** The pad keys a trace has crossed, as digits. Empty except while tracing on the keypad. */
     private val tracedDigits = StringBuilder(MAX_TRACED_DIGITS)
+
+    // ------------------------------------------------------------------ emoji touch
+
+    /**
+     * The emoji grid's own touch handling, which is not the keyboard's.
+     *
+     * Everywhere else in this view a key commits on touch-DOWN, and the comment at the top of the
+     * file explains why: it removes latency and stops letters being dropped when a finger rolls off
+     * a key while typing fast. The emoji grid has to do the opposite, because the same gesture that
+     * picks an emoji is also the one that scrolls 220 rows of them. So a cell here commits on the
+     * lift, and only if the finger did not travel far enough to be a scroll.
+     *
+     * Returns true when the event was the grid's, so the rest of [onTouchEvent] leaves it alone.
+     */
+    private fun onEmojiTouch(ev: MotionEvent): Boolean {
+        if (layer != Layer.EMOJI) return false
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                // The variant row is a modal overlay: while it is open it owns every touch, and a
+                // tap anywhere off it closes it without inserting anything.
+                if (variantGlyphs.isNotEmpty()) {
+                    val picked = variantSlotAt(ev.x, ev.y)
+                    if (picked >= 0) {
+                        tap()
+                        commitEmoji(variantGlyphs[picked])
+                    }
+                    variantGlyphs = emptyList()
+                    invalidate()
+                    return true
+                }
+                val key = findKey(ev.x, ev.y)
+                if (key == null || !Key.isEmojiCell(key.id)) return false
+                emojiPointerId = ev.getPointerId(0)
+                pressedEmojiCell = Key.emojiCellIndex(key.id)
+                emojiScrolling = false
+                emojiDownY = ev.y
+                emojiDownScroll = emojiScroll
+                removeCallbacks(emojiHold)
+                postDelayed(emojiHold, SUGGESTION_HOLD_MS)
+                invalidate()
+                return true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (variantGlyphs.isNotEmpty()) return true
+                // Once scrolling, [pressedEmojiCell] is cleared — so testing it alone stopped the
+                // scroll dead after its first event, and handed every later MOVE to the normal path,
+                // where a stale downY made a downward drag close the keyboard mid-scroll.
+                if (pressedEmojiCell < 0 && !emojiScrolling) return false
+                val dy = ev.y - emojiDownY
+                if (!emojiScrolling && abs(dy) > emojiScrollSlop) {
+                    emojiScrolling = true
+                    pressedEmojiCell = -1
+                    removeCallbacks(emojiHold)
+                }
+                if (emojiScrolling) {
+                    emojiScroll = emojiDownScroll - dy
+                    relayoutEmoji()
+                }
+                return true
+            }
+
+            // A second finger while the grid owns the gesture is a palm or a stray thumb. Swallowed
+            // rather than passed on: without this it reached pressDown, which commits control keys on
+            // touch-down — so a second finger could fire the back chevron or a category jump straight
+            // through the "modal" variant row.
+            MotionEvent.ACTION_POINTER_DOWN ->
+                return variantGlyphs.isNotEmpty() || pressedEmojiCell >= 0 || emojiScrolling
+
+            MotionEvent.ACTION_POINTER_UP -> {
+                // Only the finger that started the gesture ends it. Otherwise lifting the second
+                // finger committed the first finger's cell, wherever that finger had since moved.
+                if (ev.getPointerId(ev.actionIndex) != emojiPointerId) {
+                    return pressedEmojiCell >= 0 || emojiScrolling
+                }
+                return finishEmojiGesture()
+            }
+
+            MotionEvent.ACTION_UP -> {
+                if (variantGlyphs.isNotEmpty()) return true
+                return finishEmojiGesture()
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                clearEmojiGesture()
+                variantGlyphs = emptyList()
+                invalidate()
+                return false
+            }
+        }
+        return false
+    }
+
+    /** Lift: insert the held cell, unless the finger turned the press into a scroll. */
+    private fun finishEmojiGesture(): Boolean {
+        removeCallbacks(emojiHold)
+        val cell = pressedEmojiCell
+        val wasScrolling = emojiScrolling
+        clearEmojiGesture()
+        if (!wasScrolling && cell >= 0) {
+            emojiGlyphs.getOrNull(cell)?.let { tap(); commitEmoji(it) }
+        }
+        invalidate()
+        return cell >= 0 || wasScrolling
+    }
+
+    private fun clearEmojiGesture() {
+        removeCallbacks(emojiHold)
+        pressedEmojiCell = -1
+        emojiScrolling = false
+        emojiPointerId = -1
+    }
+
+    private var emojiPointerId = -1
+
+    /**
+     * Re-place the visible rows for a new scroll position, without a full relayout.
+     *
+     * [rebuild] calls requestLayout, which puts the IME through a whole measure pass — once per touch
+     * event while a finger is dragging. Scrolling only moves the window over a list that has not
+     * changed, so it re-places and repaints instead.
+     */
+    private fun relayoutEmoji() {
+        placed.clear()
+        letterKeys.clear()
+        layoutEmoji()
+        invalidate()
+    }
+
+    private var emojiDownY = 0f
+    private var emojiDownScroll = 0f
+
+    /** Travel before a press becomes a scroll. Deliberately small: the rows are only a key tall. */
+    private val emojiScrollSlop = dpf(8)
+
+    /**
+     * Held on a cell: open the variant row, if that emoji has one.
+     *
+     * Long-press rather than tap, which is the one place this departs from what was asked for. A tap
+     * has to insert, because the whole point of choosing a default skin tone in settings is that the
+     * tone you want is the one already on screen — if tapping opened a picker instead, every hand and
+     * every face would cost two taps to reach the tone you already told it you wanted.
+     */
+    private val emojiHold = Runnable {
+        val cell = pressedEmojiCell
+        if (cell < 0) return@Runnable
+        val variants = emojiPanel.variantsAt(cell)
+        if (variants.isEmpty()) return@Runnable
+        pressedEmojiCell = -1
+        variantGlyphs = variants
+        if (haptics) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        invalidate()
+    }
+
+    /** Which variant a touch lands on, or -1. The row sits across the middle of the grid. */
+    private fun variantSlotAt(x: Float, y: Float): Int {
+        if (variantGlyphs.isEmpty()) return -1
+        val r = variantRowRect()
+        if (y < r.top || y > r.bottom) return -1
+        val n = variantGlyphs.size.coerceAtMost(emojiCols)
+        val cw = r.width() / n
+        val slot = ((x - r.left) / cw).toInt()
+        return if (slot in 0 until n) slot else -1
+    }
+
+    /** Where the variant row is drawn. One row tall, centred in the grid, full width. */
+    private fun variantRowRect(): RectF {
+        val top = stripTop + padTop + rowPitch
+        return RectF(0f, top, width.toFloat(), top + rowPitch)
+    }
+
+    private fun commitEmoji(glyph: String) {
+        val before = emojiPanel.leadingCount()
+        emojiPanel.remember(glyph)
+        listener?.onText(glyph)
+        // A new recent shifts every cell along by one. The tap path survives it (the placed keys and
+        // [emojiGlyphs] are stale together), but the long-press resolves through the panel, which is
+        // not — so without this, a hold after a commit offered the variants of the neighbouring
+        // emoji and inserted the wrong one.
+        if (emojiPanel.leadingCount() != before) relayoutEmoji()
+    }
 
     /** Which strip slot ([0, SLOTS)) a touch lands in, or -1 if it isn't on the strip at all. */
     private fun suggestionSlotAt(x: Float, y: Float): Int {
@@ -1267,8 +1763,9 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.SHIFT -> { onShift(); rebuild() }
             Key.BACKSPACE -> listener?.onBackspace()
             Key.ENTER -> listener?.onEnter()
-            Key.EMOJI -> { layer = Layer.EMOJI; rebuild() }
-            Key.EMOJI_BACK -> { layer = Layer.LETTERS; rebuild() }
+            Key.EMOJI -> { openEmoji() }
+            Key.EMOJI_BACK -> { closeEmoji() }
+            Key.EMOJI_SEARCH -> listener?.onEmojiSearch()
             Key.SYMBOLS -> { layer = Layer.SYMBOLS; rebuild() }
             Key.MORE -> { layer = Layer.MORE; rebuild() }
             Key.LETTERS -> { layer = Layer.LETTERS; rebuild() }
@@ -1282,13 +1779,20 @@ class LightKeyboardView @JvmOverloads constructor(
                 listener?.onText(" "); return true
             }
             else -> {
+                if (Key.isEmojiCat(id)) {
+                    val g = Key.emojiCatIndex(id)
+                    if (g >= 0) scrollEmojiTo(emojiPanel.cellOfGroup(g))
+                    return false
+                }
+                // An emoji cell commits on lift, not here — see onTouchEvent. A drag across the grid
+                // is a scroll, and committing on touch-down would insert an emoji every time.
+                if (Key.isEmojiCell(id)) return false
                 if (Key.isPad(id)) {
                     // The keypad's own key. The host holds the digit sequence and the word it is
                     // currently reading, because only it can see the field — see LightImeService.
                     listener?.onKeypad(Key.padDigit(id), shifted)
                     return false
                 }
-                if (layer == Layer.EMOJI) { listener?.onText(id); return false }
                 listener?.onText(labelFor(id))
                 return true
             }

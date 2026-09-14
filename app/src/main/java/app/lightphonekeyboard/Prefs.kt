@@ -24,6 +24,11 @@ object Prefs {
     private const val KEY_DELETE_ACTION = "delete_action"
     private const val KEY_T9_MODE = "t9_mode"
     private const val KEY_HAPTICS = "haptics"
+    private const val KEY_SKIN_TONE = "skin_tone"
+    private const val KEY_RECENT_EMOJI = "recent_emoji"
+    private const val KEY_EMOJI_SUGGEST = "emoji_suggest"
+    private const val KEY_SWIPE_STRENGTH = "swipe_strength"
+    private const val KEY_SWIPE_ALTERNATES = "swipe_alternates"
 
     /** Keyboard letter arrangements; the stored value of [keyLayout]. */
     const val LAYOUT_QWERTY = "qwerty"
@@ -123,6 +128,46 @@ object Prefs {
     fun setForgottenWords(c: Context, value: String) =
         prefs(c).edit().putString(KEY_FORGOTTEN_WORDS, value).apply()
 
+    /**
+     * How far a swipe is allowed to reach for a word — the same three settings autocorrect has, doing
+     * the matching job for traces.
+     *
+     * Cautious keeps the decoder near what was actually drawn, so a trace that is nowhere near a word
+     * produces nothing rather than the closest thing in the dictionary. Eager always finds something.
+     * Balanced is the fitted cutoff and the default.
+     */
+    fun swipeStrength(c: Context): Alternatives.Strength {
+        val stored = prefs(c).getString(KEY_SWIPE_STRENGTH, null) ?: return Alternatives.Strength.BALANCED
+        return try {
+            Alternatives.Strength.valueOf(stored)
+        } catch (e: IllegalArgumentException) {
+            Alternatives.Strength.BALANCED
+        }
+    }
+
+    fun setSwipeStrength(c: Context, value: Alternatives.Strength) =
+        prefs(c).edit().putString(KEY_SWIPE_STRENGTH, value.name).apply()
+
+    /** What [swipeStrength] means to the decoder: a multiplier on how far it will look. */
+    fun swipeReach(c: Context): Float = when (swipeStrength(c)) {
+        Alternatives.Strength.CAUTIOUS -> 0.75f
+        Alternatives.Strength.BALANCED -> 1f
+        Alternatives.Strength.EAGER -> 1.35f
+    }
+
+    /**
+     * How many readings of a trace the delete key can walk. Four by default.
+     *
+     * Worth a setting because the right word is in the top four about 99% of the time but first only
+     * 88-94% — so for anyone whose traces are sloppy, the useful lever is not accuracy but how many
+     * guesses they can reach without retyping.
+     */
+    fun swipeAlternates(c: Context): Int =
+        prefs(c).getInt(KEY_SWIPE_ALTERNATES, 4).coerceIn(2, 8)
+
+    fun setSwipeAlternates(c: Context, value: Int) =
+        prefs(c).edit().putInt(KEY_SWIPE_ALTERNATES, value.coerceIn(2, 8)).apply()
+
     /** Swipe typing: drag across the letters to write a whole word. On by default. */
     fun swipeTyping(c: Context): Boolean = prefs(c).getBoolean(KEY_SWIPE, true)
 
@@ -170,6 +215,37 @@ object Prefs {
 
     fun setHaptics(c: Context, value: Boolean) =
         prefs(c).edit().putBoolean(KEY_HAPTICS, value).apply()
+
+    /**
+     * Default skin tone for every emoji that has one: 0 for the yellow default, 1-5 for the five
+     * Fitzpatrick tones in Unicode's order. Applied across the whole panel, so it is chosen once
+     * rather than per emoji — and any single emoji can still be tapped for all of its variants.
+     */
+    fun skinTone(c: Context): Int = prefs(c).getInt(KEY_SKIN_TONE, 0).coerceIn(0, 5)
+
+    fun setSkinTone(c: Context, value: Int) =
+        prefs(c).edit().putInt(KEY_SKIN_TONE, value.coerceIn(0, 5)).apply()
+
+    /**
+     * Emoji used lately, most recent first, newline-separated.
+     *
+     * Kept because the alternative is scrolling 220 rows for the same six emoji every time. Stored as
+     * the exact glyph, tone and all, so a recent is inserted as it was used rather than re-derived.
+     */
+    fun recentEmoji(c: Context): String? = prefs(c).getString(KEY_RECENT_EMOJI, null)
+
+    fun setRecentEmoji(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_RECENT_EMOJI, value).apply()
+
+    /**
+     * Offer matching emoji in the suggestion strip while a word is being typed, so `pizza` puts 🍕
+     * within reach without opening the panel at all. Off by default: it costs a strip slot that
+     * would otherwise hold a word, and the panel is still there for anyone who does not want this.
+     */
+    fun emojiSuggestions(c: Context): Boolean = prefs(c).getBoolean(KEY_EMOJI_SUGGEST, false)
+
+    fun setEmojiSuggestions(c: Context, value: Boolean) =
+        prefs(c).edit().putBoolean(KEY_EMOJI_SUGGEST, value).apply()
 
     /** Show the emoji key (access to the emoji panel). On by default. */
     fun emojiKey(c: Context): Boolean = prefs(c).getBoolean(KEY_EMOJI_KEY, true)

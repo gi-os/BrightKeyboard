@@ -146,13 +146,19 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             clearAlternatives()
             resetPadWord()
             settleMultiTap()
+            endEmojiSearch()
         }
+        // Outside the !restarting block on purpose: a field that merely reconnects keeps its pad word
+        // and its alternatives, but a half-typed emoji query has nowhere to live across it and would
+        // otherwise swallow every letter that followed.
+        if (searchingEmoji) endEmojiSearch()
         if (spell == null) initSpell()
         // The settings screen is a separate Activity in the same process, so a word added there only
         // reaches the running keyboard when it next opens.
         engine.reloadUserWords()
         engine.reloadForgottenWords()
         engine.ensureKeypad()   // the layout may have been switched to the keypad since last time
+        keyboard?.emojiPanel?.let { it.prepare(); it.reload() }
         updateShift()
         refreshSuggestions()
     }
@@ -192,6 +198,8 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     // ------------------------------------------------------------------ key events
 
     override fun onText(s: String) {
+        // A search borrows the letter keys, so its query gets first refusal on every character.
+        if (searchingEmoji && emojiSearchKey(s)) return
         val ic = currentInputConnection ?: return
         // A character arriving from anywhere else — the symbols layer, an emoji, dictation — settles
         // whatever the pad was in the middle of. The word in the field is already correct; it just
@@ -272,6 +280,15 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      * *typed*; it would not make sense for it to also throw away the alternatives for what you drew.
      */
     override fun onBackspace() {
+        emojiQuery?.let { q ->
+            // Backspace belongs to the query while one is running, and emptying it ends the search
+            // rather than starting to eat the document behind it.
+            if (q.isEmpty()) { endEmojiSearch() } else {
+                q.setLength(q.length - 1)
+                refreshEmojiSearch()
+            }
+            return
+        }
         val ic = currentInputConnection ?: return
         // Mid-word on the keypad, backspace takes back a *tap*, not a character. The word in the field
         // is a reading of the digits so far, so deleting one of its letters would leave text that is
@@ -363,6 +380,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     private var multiTapChar = ""
 
     override fun onKeypad(digit: Int, shifted: Boolean) {
+        if (searchingEmoji) { endEmojiSearch(); return }
         if (digit !in 0..9) return    // an id that didn't parse; appending it would poison the word
         val ic = currentInputConnection ?: return
         clearAlternatives()
@@ -408,6 +426,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     private var padTraceTaken = -1
 
     override fun onKeypadGesture(digits: String) {
+        if (searchingEmoji) { endEmojiSearch(); return }
         val ic = currentInputConnection ?: return
         padTraceTaken = -1
         val decoder = engine.t9 ?: return
@@ -645,6 +664,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     }
 
     override fun onEnter() {
+        if (searchingEmoji) { endEmojiSearch(); return }
         val ic = currentInputConnection ?: return
         if (padOpen) resetPadWord()
         settleMultiTap()
@@ -676,6 +696,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      *  or digit, so a double space at line start or after punctuation just stays two spaces. The IME
      *  owns the text, so the rewrite happens here; the view only detects the double tap. */
     override fun onDoubleSpace() {
+        if (searchingEmoji) { endEmojiSearch(); return }
         val ic = currentInputConnection ?: return
         clearUndo()
         clearAlternatives()
@@ -697,6 +718,86 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     // Never take over the whole screen with the big white "extract" editor (it appears in landscape by
     // default). Our keyboard is built for the compact LightOS layout, so keep it docked at the bottom.
     override fun onEvaluateFullscreenMode(): Boolean = false
+
+    // ------------------------------------------------------------------ emoji search
+    //
+    // The keyboard has no text field of its own and no room for one, so search borrows the field the
+    // user is already typing into. Tapping the search key leaves the panel for the letters and starts
+    // a query; every letter after that goes into the query instead of into the document, and the
+    // panel comes back the moment there is something to show. Backspace shortens the query, and
+    // anything else — space, enter, a tapped result — ends the search.
+    //
+    // Borrowing rather than inserting matters: a half-typed query must never reach the document. The
+    // query lives here and nowhere else, and nothing is committed until a result is tapped.
+
+    /** The live emoji query, or null when no search is running. */
+    private var emojiQuery: StringBuilder? = null
+
+    /**
+     * The panel closed or reopened under a running search.
+     *
+     * Without this the query stays live after backing out of a search, and every letter afterwards
+     * feeds a query nobody can see instead of the document — a keyboard that has silently stopped
+     * typing, which is about the worst state this can be in.
+     */
+    override fun onEmojiPanelClosed() {
+        if (searchingEmoji) endEmojiSearch()
+    }
+
+    override fun onEmojiSearch() {
+        emojiQuery = StringBuilder()
+        keyboard?.showLetters()
+        refreshEmojiSearch()
+    }
+
+    /** True while a search owns the letter keys. */
+    private val searchingEmoji: Boolean get() = emojiQuery != null
+
+    private fun endEmojiSearch() {
+        emojiQuery = null
+        keyboard?.setSearchQuery(null)
+    }
+
+    /**
+     * Feed the current query to the panel.
+     *
+     * The panel is shown as soon as the query is long enough to mean anything, and the letters stay
+     * up below the shortest queries so there is something to type on. Both states keep the query
+     * visible in the strip, which is the only place the user can see what they have typed — it is
+     * not in the document, by design.
+     */
+    private fun refreshEmojiSearch() {
+        val q = emojiQuery?.toString() ?: return
+        val kb = keyboard ?: return
+        kb.setSearchQuery(q)
+        if (q.length >= app.lightphonekeyboard.text.Emoji.MIN_QUERY) {
+            kb.showEmojiSearch(q)
+        } else {
+            kb.showLetters()
+        }
+    }
+
+    /**
+     * A key pressed while a search is running. Returns true when the search consumed it.
+     *
+     * Only letters and backspace belong to the query. Everything else is the user saying they are
+     * done — a space or a return in particular, which are what somebody presses when they have given
+     * up on finding an emoji and want to carry on writing.
+     */
+    private fun emojiSearchKey(s: String): Boolean {
+        val q = emojiQuery ?: return false
+        // Space first and on its own. Folded into the letter test it read as one condition and was
+        // not: `&&` binds tighter than `||`, so a space typed against an empty query fell through
+        // and reached the document, while a space against a non-empty one did not.
+        if (s == " ") { endEmojiSearch(); return true }
+        if (s.length == 1 && s[0].isLetter()) {
+            q.append(s.lowercase())
+            refreshEmojiSearch()
+            return true
+        }
+        endEmojiSearch()
+        return false
+    }
 
     override fun onMic() {
         if (!Prefs.voiceEnabled(this)) return   // mic key is hidden when voice is off, but guard anyway
@@ -780,6 +881,9 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      * which word they wanted, so a backspace afterwards should delete, not second-guess them.
      */
     override fun onSuggestion(item: StripItem) {
+        // The strip is showing the query while a search runs, not suggestions — so a tap on it is a
+        // tap on text, and inserting whatever word was underneath would be invisible and wrong.
+        if (searchingEmoji) return
         if (item.literal) {
             keepAsTyped(item.word)
             return
@@ -973,6 +1077,31 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     }
 
     /**
+     * The strip's words with a matching emoji put in front of them, when that setting is on.
+     *
+     * One slot, not three. The emoji is an extra, and a strip that is mostly emoji stops being a
+     * word strip — so it takes the leftmost slot and the words shuffle right, and it only appears at
+     * all when the word being typed clearly names something: `pizza` earns 🍕, `pi` does not.
+     *
+     * The exact-name rule is what keeps it quiet. A prefix match would put an emoji in the strip for
+     * most words anybody types, which is how this feature becomes annoying rather than useful.
+     */
+    private fun withEmoji(prefix: String, words: List<StripItem>): List<StripItem> {
+        if (prefix.length < EMOJI_SUGGEST_MIN || !Prefs.emojiSuggestions(this)) return words
+        val panel = keyboard?.emojiPanel ?: return words
+        if (!panel.ready) return words
+        val table = panel.table
+        val hits = table.search(prefix, 1)
+        if (hits.isEmpty()) return words
+        val i = hits[0]
+        // Only when the query *is* the name, or a whole word of it. Anything looser fires constantly.
+        val name = table.name(i)
+        if (name != prefix && !name.split(' ').contains(prefix)) return words
+        val glyph = table.withTone(i, panel.tone)
+        return (listOf(StripItem(glyph)) + words).take(SUGGESTION_SLOTS)
+    }
+
+    /**
      * Recompute the strip from where the cursor is now. Called after every keystroke and cursor move.
      *
      * Cheap enough to run unconditionally — the prefix search is bounded by the number of completions
@@ -1023,7 +1152,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             )
             return
         }
-        kb.setSuggestions(s.stripFor(prefix, SUGGESTION_SLOTS, contextOf(before, prefix)))
+        kb.setSuggestions(withEmoji(prefix, s.stripFor(prefix, SUGGESTION_SLOTS, contextOf(before, prefix))))
     }
 
     /**
@@ -1076,11 +1205,16 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      * the right outcome for a stray drag.
      */
     override fun onGesture(xs: FloatArray, ys: FloatArray, count: Int) {
+        // A search borrows the letter keys, so a trace across them is a word the user never meant to
+        // commit — they think they are searching. Same reasoning for the keypad and the strip below.
+        if (searchingEmoji) { endEmojiSearch(); return }
         val ic = currentInputConnection ?: return
         if (!Prefs.swipeTyping(this)) return
         val decoder = engine.decoder ?: return          // dictionary still loading, or unavailable
         val words = decoder.decode(
-            xs, ys, count, GESTURE_ALTERNATES, contextOf(textBeforeCursor(CONTEXT_LOOKBACK), ""),
+            xs, ys, count, Prefs.swipeAlternates(this),
+            contextOf(textBeforeCursor(CONTEXT_LOOKBACK), ""),
+            Prefs.swipeReach(this),
         )
         if (words.isEmpty()) return
         clearUndo()
@@ -1407,6 +1541,9 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         const val EXTRA_VISIBLE = "visible"
         /** Window of text to inspect when deleting the last grapheme cluster (covers long emoji). */
         private const val GRAPHEME_LOOKBACK = 16
+        /** Below this a word is too short to name anything, and the emoji slot stays a word slot. */
+        const val EMOJI_SUGGEST_MIN = 3
+
         /** Readings to keep for the keypad word in progress, for the delete key to walk afterwards. */
         const val PAD_READINGS = 6
 

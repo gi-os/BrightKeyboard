@@ -217,6 +217,39 @@ class SetupActivity : AppCompatActivity() {
             }
         }
 
+        // Swipe typing's own reach and alternatives, next to the autocorrect ones for the same reason.
+        val swipeRow = run {
+            val title = label(getString(R.string.setup_swipe_settings), 20f, R.color.white)
+                .apply { setPadding(0, 0, 0, 0) }
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, pad, 0, 0)
+                isClickable = true
+                setOnClickListener {
+                    startActivity(Intent(this@SetupActivity, SwipeActivity::class.java))
+                }
+                addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
+
+        // Emoji: the default skin tone and the suggestion-strip toggle. Its own page for the same
+        // reason the autocorrect one is — a choice with six answers is not a toggle.
+        val emojiRow = run {
+            val title = label(getString(R.string.setup_emoji), 20f, R.color.white)
+                .apply { setPadding(0, 0, 0, 0) }
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, pad, 0, 0)
+                isClickable = true
+                setOnClickListener {
+                    startActivity(Intent(this@SetupActivity, EmojiSettingsActivity::class.java))
+                }
+                addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
+
         // How much autocorrect fixes, and what the delete key does after it. Sits next to the layout
         // and height rows because it is the same kind of thing: a choice with more than two answers,
         // so it gets its own page rather than a toggle.
@@ -284,7 +317,7 @@ class SetupActivity : AppCompatActivity() {
             hapticsToggle,
             returnToggle, emojiToggle,
             voiceRow, voiceStatus!!,
-            layoutRow, heightRow, correctionRow, wordsRow, tryRow,
+            layoutRow, heightRow, correctionRow, swipeRow, emojiRow, wordsRow, tryRow,
         ).forEach { root.addView(it) }
 
         // Reflect the keyboard's real state on the chevron (▴ open / ▾ closed), however it's toggled.

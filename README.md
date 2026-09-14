@@ -19,7 +19,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.1.x** (tag `v1.1.<n>`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v1.2.x** (tag `v1.2.<n>`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -75,6 +75,9 @@ Optional settings, all in the app itself:
 - **Swipe typing** (on by default) — drag from letter to letter to write a whole word, then lift.
   Guessed wrong? Delete walks the other words your trace could have meant. This works on the keypad
   too.
+- **Swipe settings** — **How far it reaches** (Cautious / Balanced / Eager) decides what the decoder
+  does when nothing matches: settle for the nearest word, or give you nothing. **Words delete offers**
+  sets how many readings of one trace you can walk through, from two to eight.
 - **Suggestions** (off by default) — a thin strip above the keys showing three words: completions of
   what you're typing, the correction autocorrect has in mind, or alternate swipe readings, ranked
   against the word before them. Tap one to use it. **Hold** one to forget it — the keyboard stops
@@ -97,6 +100,12 @@ Optional settings, all in the app itself:
 - **Auto-Capitalize** / **Auto-Period** (both on by default) — capitalize sentence starts; double-tap
   space for a period.
 - **Return key** / **Emoji keyboard** (both on by default) — show or hide those keys.
+- **Emoji** — every emoji, not a fixed 24. The panel scrolls, with a jump per category and the ones
+  you used lately at the top, and anything this phone's font cannot draw is left out rather than shown
+  as a box. Press the magnifier to search by name: `pizza` finds 🍕 and so does `hungry`. Pick a
+  default **skin tone** once and the whole panel uses it; hold any emoji for its other tones and its
+  gendered forms. **Emoji in suggestions** (off by default) puts an emoji in the suggestion strip when
+  you type the name of a thing.
 - **Key vibration** (on by default) — the short tick under each key press. Android's own touch-vibration
   setting still sits above this one, so turning it on cannot override a phone with haptics switched off.
 - **Voice dictation** (off by default) — downloads a ~40 MB offline speech-to-text model (Vosk) once,
@@ -178,9 +187,80 @@ update because the certificate differs — uninstall the old one first.
 
 ## Version history
 
-Every push to `main` builds, tests, and publishes a signed APK as the next `v1.1.<n>` release (`n` is
+Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v1.2.x** (2026-09-13) — **Every emoji, with search. A swipe decoder that reads
+  corners. A key-vibration switch. A hold on the emoji key to swap keyboards.**
+
+  The emoji panel held 24 glyphs, written out by hand in the view. It now holds all of them. 1,761
+  base emoji come from Unicode's own data, in Unicode's order and categories, with the CLDR keywords
+  that make search work. `tools/gen_emoji.py` builds the table, and it comes to 117 KB.
+
+  **The font decides what appears.** A bundled table lists what Unicode defines, not what the phone
+  can draw, and those are never the same list. LightOS ships whatever emoji font its Android version
+  shipped with, so anything newer renders as an empty box. The panel asks the font about every
+  sequence once, on a background thread, and drops what it cannot draw. That also keeps the panel right if LightOS updates the
+  font. It recomputes the answer rather than remembering it.
+
+  **Search.** Press the magnifier and the letters come back. What you type goes into the query, not into your
+  message. Results fill the grid as you go. `pizza` finds 🍕. So does `hungry`, because CLDR knows
+  that is what people call it. A setting does the other way round. With **Emoji in
+  suggestions** on, typing the name of a thing puts its emoji in the suggestion strip. The common
+  ones then never need the panel. It fires on a whole word, never on a
+  prefix. That is what keeps it quiet.
+
+  Ranking matters more than matching here. `hand` matches sixty emoji. An exact name wins, then a word of the name, then a
+  keyword. Unicode's order breaks ties, and that puts the familiar emoji first.
+
+  **You pick a skin tone once**, in settings, and the panel uses it throughout. Hold any emoji to see all of its variants: every tone, and
+  the gendered forms. The table stores those spellings rather than
+  assembling them at run time. Unicode spells tone as a modifier, and gender sometimes as a joiner and
+  sometimes as a different character. Assemble one wrongly and no font has it, so it draws as a box.
+
+  The panel scrolls, with a jump button per category and the emoji you used lately at the top. It
+  builds only the rows on screen, so scrolling 220 rows costs what scrolling three costs.
+
+  **The swipe decoder reads corners now.** A corner is the one place on a trace where what you meant is
+  unambiguous. Everywhere else the finger is in transit between two letters, and its position is a
+  compromise. The old model averaged every sample equally, so the long straight runs in between
+  diluted that evidence. A wrong word with roughly the right sweep could beat the right one. Each
+  corner now charges a candidate the distance to its nearest letter. A word with a letter at every
+  turn pays nothing.
+
+  The preceding word also gets more say on a swipe than it does on a tapped correction. The two are not the same bet. A correction replaces a word
+  somebody typed deliberately, so it answers to a short leash. A trace is ambiguous by nature, and
+  context is the only thing that can separate its readings.
+
+  Measured over 250 real word pairs. The corner channel and the looser bound, together:
+
+  ```
+                before   after
+  clean          99.6%  100.0%
+  jittery        97.6%   98.4%
+  sloppy         94.8%   95.6%
+  fast           96.8%   97.2%
+  fast + sloppy  92.4%   93.6%
+  ```
+
+  The benchmark in the tests fitted both numbers, which is the only honest way to set any of these.
+  One thing turned up on the way. The corner channel has to stay off for two-letter words. A
+  two-key stroke is one straight leg with no interior corner, so anything found on it is noise.
+  Charging that noise made `it` decode as `our`.
+
+  **Swipe typing gets its own settings**, the two questions the autocorrect page asks about taps. **How far it reaches** decides what the decoder does when
+  nothing matches: settle for the nearest word in the dictionary, or give you nothing. **Words delete offers** has no equivalent on the tapped side.
+  It is here because of the numbers: the word you drew is in the first four about 99% of the time,
+  and first about 94%. If your traces run sloppy, accuracy is not the lever that
+  helps. What helps is how many guesses the delete key can walk before you give up and retype.
+
+  **Key vibration** now has a switch. The tick under each key press was unconditional, and stopping it
+  meant turning off haptics for the whole phone. Android's own touch-vibration setting still
+  outranks it.
+
+  **Holding the emoji key changes keyboard.** The globe key does the same job. It appears only when you have a second keyboard, and it
+  has a switch of its own. This route is always there.
 
 - **v1.1.x** (2026-09-13) — **Four engines instead of one, a delete key that walks every guess, and a
   twelve-key T9 keypad.**
