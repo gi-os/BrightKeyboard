@@ -37,4 +37,3 @@ result
 
 # Local API-key config (never commit)
 config.local.env
-__pycache__/

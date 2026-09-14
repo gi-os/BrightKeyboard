@@ -448,11 +448,15 @@ class LightKeyboardView @JvmOverloads constructor(
     private val pressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 255, 255, 255) }
     private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(60, 255, 255, 255) }
     private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(150, 255, 255, 255)
+        color = Color.argb(TRAIL_ALPHA.toInt(), 255, 255, 255)
         style = Paint.Style.STROKE
         strokeWidth = dpf(3)
         strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
     }
+
+    /** Full width of the trail, under the finger. The tail tapers to [TRAIL_MIN_SCALE] of it. */
+    private val trailWidth = dpf(3.5f)
     private val iconCache = HashMap<Int, Drawable>()
 
     // --- touch tracking ---
@@ -474,9 +478,13 @@ class LightKeyboardView @JvmOverloads constructor(
     private val traceY = FloatArray(MAX_TRACE_POINTS)
     private var traceCount = 0
     private var tracing = false
-    /** Pixel copy of the trace, for drawing the trail. Same indices as [traceX]/[traceY]. */
-    private val trailX = FloatArray(MAX_TRACE_POINTS)
-    private val trailY = FloatArray(MAX_TRACE_POINTS)
+    /** The drawn trail, in pixels. Denser than the decoder's samples — see [addTracePoint]. */
+    private val trailX = FloatArray(MAX_TRAIL_POINTS)
+    private val trailY = FloatArray(MAX_TRAIL_POINTS)
+
+    /** The decoder's samples, in pixels, for its own minimum-spacing test. */
+    private val traceRawX = FloatArray(MAX_TRACE_POINTS)
+    private val traceRawY = FloatArray(MAX_TRACE_POINTS)
     /** Width of a letter key (px). The x half of the key-unit conversion; y uses [rowPitch]. */
     private var letterKeyW = 1f
 
@@ -809,7 +817,7 @@ class LightKeyboardView @JvmOverloads constructor(
         if (layer == Layer.EMOJI && variantGlyphs.isNotEmpty()) drawVariantRow(canvas)
         if (layer == Layer.EMOJI && emojiGlyphs.isEmpty()) drawEmojiEmpty(canvas)
         if (stripH > 0f) drawStrip(canvas)
-        if (tracing) drawTrail(canvas)
+        if (tracing || trailFadeFrom != 0L) drawTrail(canvas)
     }
 
     /**
@@ -873,11 +881,51 @@ class LightKeyboardView @JvmOverloads constructor(
      * rather than a bright ribbon, to sit inside the LightOS palette.
      */
     private fun drawTrail(canvas: Canvas) {
-        if (traceCount < 2) return
-        for (i in 1 until traceCount) {
-            canvas.drawLine(trailX[i - 1], trailY[i - 1], trailX[i], trailY[i], trailPaint)
+        if (trailCount < 2) return
+
+        // Fade after the lift rather than vanishing. A trail that disappears the instant the finger
+        // leaves reads as a dropped frame; a short ramp reads as the stroke settling.
+        var fade = 1f
+        if (trailFadeFrom != 0L) {
+            val elapsed = System.currentTimeMillis() - trailFadeFrom
+            if (elapsed >= TRAIL_FADE_MS) { trailCount = 0; trailFadeFrom = 0L; return }
+            fade = 1f - elapsed.toFloat() / TRAIL_FADE_MS
+            postInvalidateOnAnimation()
         }
+
+        // A quadratic through the midpoints, not a line between the samples.
+        //
+        // Each sample becomes the control point of a curve running between its neighbours' midpoints,
+        // which is the standard way to draw a smooth stroke from touch input: the curve passes
+        // through every midpoint and bends toward every sample, so there is no corner anywhere and no
+        // extra data is needed. The old polyline showed a visible facet at each sample, and at speed
+        // the samples are far enough apart that the whole trail looked like a chain of straight legs.
+        //
+        // Segment by segment rather than as one Path, because each one is drawn at its own width and
+        // alpha: the tail is thin and faint, the end under the finger is full width. That taper is
+        // most of what makes a trail feel like it is being drawn rather than accumulated.
+        var prevMidX = (trailX[0] + trailX[1]) / 2f
+        var prevMidY = (trailY[0] + trailY[1]) / 2f
+        for (i in 1 until trailCount) {
+            val midX = if (i == trailCount - 1) trailX[i] else (trailX[i] + trailX[i + 1]) / 2f
+            val midY = if (i == trailCount - 1) trailY[i] else (trailY[i] + trailY[i + 1]) / 2f
+            // How near the head this segment is, 0 at the tail and 1 under the finger.
+            val t = i.toFloat() / (trailCount - 1)
+            val taper = TRAIL_MIN_SCALE + (1f - TRAIL_MIN_SCALE) * t * t
+            trailPaint.strokeWidth = trailWidth * taper
+            trailPaint.alpha = (TRAIL_ALPHA * fade * (TRAIL_MIN_SCALE + (1f - TRAIL_MIN_SCALE) * t)).toInt()
+            trailPath.reset()
+            trailPath.moveTo(prevMidX, prevMidY)
+            trailPath.quadTo(trailX[i], trailY[i], midX, midY)
+            canvas.drawPath(trailPath, trailPaint)
+            prevMidX = midX
+            prevMidY = midY
+        }
+        trailPaint.alpha = TRAIL_ALPHA.toInt()
     }
+
+    /** Reused by [drawTrail]; one Path per segment per frame would allocate on every touch event. */
+    private val trailPath = android.graphics.Path()
 
     /** The voice-dictation surface: a big centered mic, the live status/partial text, and a hint. */
     private fun drawListening(canvas: Canvas) {
@@ -1169,7 +1217,22 @@ class LightKeyboardView @JvmOverloads constructor(
                             maybeStartTrace(x, y)
                         }
                     }
-                    if (tracing) addTracePoint(x, y)
+                    if (tracing) {
+                        // Every sample the digitiser reported, not just the newest. Android batches
+                        // several touch positions into one MOVE event and exposes the older ones as
+                        // "historical"; reading only ev.x threw most of them away. At speed that is
+                        // the difference between four samples across a letter and one — which made
+                        // the trail visibly faceted and gave the decoder a coarser stroke than the
+                        // hardware actually measured.
+                        val h = ev.historySize
+                        val pi = ev.findPointerIndex(firstPointerId)
+                        if (pi >= 0) {
+                            for (k in 0 until h) {
+                                addTracePoint(ev.getHistoricalX(pi, k), ev.getHistoricalY(pi, k))
+                            }
+                        }
+                        addTracePoint(x, y)
+                    }
                 }
             }
 
@@ -1300,6 +1363,8 @@ class LightKeyboardView @JvmOverloads constructor(
         if (keypadMode) listener?.onKeypadTraceStart()
         pressed.clear()
         traceCount = 0
+        trailCount = 0
+        trailFadeFrom = 0L
         tracedDigits.setLength(0)
         addTracePoint(downX, downY)
         addTracePoint(x, y)
@@ -1322,14 +1387,31 @@ class LightKeyboardView @JvmOverloads constructor(
      * equal-spacing resample toward the pause and distort the stroke.
      */
     private fun addTracePoint(x: Float, y: Float) {
+        // The trail is drawn from its own, denser buffer. The decoder's minimum step exists to stop a
+        // cluster of samples dragging its equal-spacing resample toward wherever the finger paused —
+        // a real requirement for decoding and exactly the wrong thing for drawing, where dropping
+        // four points in five is what makes a curve look like a set of straight lines.
+        if (trailCount < MAX_TRAIL_POINTS) {
+            val far = trailCount == 0 || run {
+                val dx = x - trailX[trailCount - 1]
+                val dy = y - trailY[trailCount - 1]
+                dx * dx + dy * dy >= trailMinStep * trailMinStep
+            }
+            if (far) {
+                trailX[trailCount] = x
+                trailY[trailCount] = y
+                trailCount++
+                invalidate()
+            }
+        }
         if (traceCount >= MAX_TRACE_POINTS) return
         if (traceCount > 0) {
-            val dx = x - trailX[traceCount - 1]
-            val dy = y - trailY[traceCount - 1]
+            val dx = x - traceRawX[traceCount - 1]
+            val dy = y - traceRawY[traceCount - 1]
             if (dx * dx + dy * dy < traceMinStep * traceMinStep) return
         }
-        trailX[traceCount] = x
-        trailY[traceCount] = y
+        traceRawX[traceCount] = x
+        traceRawY[traceCount] = y
         traceX[traceCount] = x / letterKeyW
         // Same upward parallax correction the tap model applies (fingers register low). One averaged
         // offset rather than the per-row values, since a trace crosses rows by definition.
@@ -1344,6 +1426,15 @@ class LightKeyboardView @JvmOverloads constructor(
         if (keypadMode) recordTracedKey(x, y)
         invalidate()
     }
+
+    /** How many points the drawn trail holds. See [addTracePoint]. */
+    private var trailCount = 0
+
+    /** Spacing below which a point adds nothing to the drawn curve. Much finer than the decoder's. */
+    private val trailMinStep = dpf(1.5f)
+
+    /** When the finger lifted, for the fade-out. 0 while a trace is live. */
+    private var trailFadeFrom = 0L
 
     /**
      * Note which pad key the trace is now over, ignoring repeats.
@@ -1376,6 +1467,10 @@ class LightKeyboardView @JvmOverloads constructor(
      */
     private fun finishTrace() {
         tracing = false
+        // Hand the trail to the fade rather than clearing it; drawTrail drops it when the ramp ends.
+        trailFadeFrom = if (trailCount >= 2) System.currentTimeMillis() else 0L
+        if (trailFadeFrom == 0L) trailCount = 0
+        postInvalidateOnAnimation()
         val n = traceCount
         traceCount = 0
         invalidate()
@@ -1399,6 +1494,8 @@ class LightKeyboardView @JvmOverloads constructor(
         // A cancelled pad trace owes the host the same digit a too-short one does.
         if (tracing && keypadMode) listener?.onKeypadTraceCancel()
         tracing = false
+        trailFadeFrom = if (trailCount >= 2) System.currentTimeMillis() else 0L
+        if (trailFadeFrom == 0L) trailCount = 0
         traceCount = 0
         tracedDigits.setLength(0)
     }
@@ -1930,5 +2027,21 @@ class LightKeyboardView @JvmOverloads constructor(
         const val MAX_TRACED_DIGITS = 24
 
         const val MAX_TRACE_POINTS = 192
+
+        /**
+         * Points kept for the drawn trail. Larger than the decoder's budget because it samples much
+         * more finely — a long word at speed can report several hundred positions, and the trail
+         * wants all of them.
+         */
+        const val MAX_TRAIL_POINTS = 640
+
+        /** How long the trail takes to fade after the finger lifts. */
+        const val TRAIL_FADE_MS = 170L
+
+        /** Alpha of the trail at full strength. Dim on purpose: a bright ribbon is not LightOS. */
+        const val TRAIL_ALPHA = 150f
+
+        /** How thin and faint the tail goes, as a fraction of the head. */
+        const val TRAIL_MIN_SCALE = 0.25f
     }
 }

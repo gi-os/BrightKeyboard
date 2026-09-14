@@ -74,7 +74,8 @@ Optional settings, all in the app itself:
   *Undo the fix*, which puts your spelling back in one press and stops.
 - **Swipe typing** (on by default) — drag from letter to letter to write a whole word, then lift.
   Guessed wrong? Delete walks the other words your trace could have meant. This works on the keypad
-  too.
+  too. The trail follows every touch position the screen reports, not one per frame, and
+  tapers from thin at the tail to full width under your finger.
 - **Swipe settings** — **How far it reaches** (Cautious / Balanced / Eager) decides what the decoder
   does when nothing matches: settle for the nearest word, or give you nothing. **Words delete offers**
   sets how many readings of one trace you can walk through, from two to eight.
