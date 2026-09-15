@@ -7,6 +7,8 @@ bundled-dictionary autocorrect.
 
 ## Install via BrightMarket
 
+[**⬇ Download the latest APK**](https://github.com/gi-os/LightKeyboard/releases/latest) · free, open source.
+
 <p align="center">
   <img src="https://gi-os.github.io/brightmarket-index/assets/qr/LightKeyboard.png" alt="Scan to open LightKeyboard in BrightMarket" width="180" />
 </p>
