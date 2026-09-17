@@ -155,11 +155,16 @@ class TextEngine(private val context: Context) {
                 dictionary = loaded
 
                 // The trie and the model, for neural swipe decoding. Built after the shape decoder
-                // is already usable, because it is the one that has to work.
+                // is already usable, because it is the one that has to work. Gated on the setting:
+                // the model is a native library, and loading it on a phone where it does not run is
+                // a process-killing crash that no try/catch here can stop — so it must not load at
+                // all unless the user has asked for it.
                 try {
-                    val lex = SwipeLexicon.build(loaded, words)
-                    encoder.prepare()
-                    if (encoder.ready) neural = NeuralDecoder(lex)
+                    if (Prefs.neuralSwipe(context)) {
+                        val lex = SwipeLexicon.build(loaded, words)
+                        encoder.prepare()
+                        if (encoder.ready) neural = NeuralDecoder(lex)
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "neural swipe decoding unavailable, using the shape decoder", e)
                 }

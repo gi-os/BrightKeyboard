@@ -334,18 +334,21 @@ object Prefs {
         prefs(c).edit().putString(KEY_CLIPS, value).apply()
 
     /**
-     * Read swipes with the bundled neural model rather than the older shape matcher. On by default.
+     * Read swipes with the bundled neural model rather than the older shape matcher. **Off by
+     * default** — the model is a native library and, on some phones, loading it takes the whole
+     * keyboard process down (a native crash, which no try/catch can stop). Swipe typing still works
+     * with the shape decoder; turn this on only once the model is known to load on this device.
      *
      * Measured against each other on 517 real human swipes, with this app's own dictionary behind
      * both: 74.7% right first time for the shape matcher, 92.5% for the model. The setting exists
      * because the model is a 2.6 MB file and a native library, and anyone who would rather not carry
      * either — or who finds the old decoder's mistakes more predictable — can have the old one back.
      *
-     * Turning it off does not remove anything from the APK. The shape decoder is always loaded: it is
+     * Turning it off skips loading the model entirely. The shape decoder is always loaded: it is
      * what answers while the model is still being copied out of the APK, and on any phone where the
      * model will not load at all.
      */
-    fun neuralSwipe(c: Context): Boolean = prefs(c).getBoolean(KEY_NEURAL_SWIPE, true)
+    fun neuralSwipe(c: Context): Boolean = prefs(c).getBoolean(KEY_NEURAL_SWIPE, false)
 
     fun setNeuralSwipe(c: Context, value: Boolean) =
         prefs(c).edit().putBoolean(KEY_NEURAL_SWIPE, value).apply()
