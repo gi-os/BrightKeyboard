@@ -36,6 +36,7 @@ class SetupActivity : AppCompatActivity() {
     private var voiceAccessory: TextView? = null
     private var layoutValue: TextView? = null
     private var heightValue: TextView? = null
+    private var handValue: TextView? = null
     private var correctionValue: TextView? = null
     private var step1: Step? = null
     private var step2: Step? = null
@@ -143,6 +144,15 @@ class SetupActivity : AppCompatActivity() {
         val emojiToggle = toggle(R.string.setup_emojikey, Prefs.emojiKey(this)) {
             Prefs.setEmojiKey(this, it)
         }
+        val hideToggle = toggle(R.string.setup_hidekey, Prefs.hideKey(this)) {
+            Prefs.setHideKey(this, it)
+        }
+        // Turning the history off also empties it. A switch that stops recording but leaves what was
+        // already recorded sitting there is not the promise the word "off" makes.
+        val clipboardToggle = toggle(R.string.setup_clipboard, Prefs.clipboardEnabled(this)) {
+            Prefs.setClipboardEnabled(this, it)
+            if (!it) Prefs.setClips(this, "")
+        }
         val hapticsToggle = toggle(R.string.setup_haptics, Prefs.haptics(this)) {
             Prefs.setHaptics(this, it)
         }
@@ -214,6 +224,25 @@ class SetupActivity : AppCompatActivity() {
                 }
                 addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
                 addView(heightValue)
+            }
+        }
+
+        // One-handed: off, or crowded against either edge. Three answers, so a page rather than a
+        // toggle — same shape as the height row right above it.
+        val handRow = run {
+            val title = label(getString(R.string.setup_onehanded), 20f, R.color.white)
+                .apply { setPadding(0, 0, 0, 0) }
+            handValue = label("", 14f, R.color.gray).apply { setPadding(0, 0, 0, 0) }
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, pad, 0, 0)
+                isClickable = true
+                setOnClickListener {
+                    startActivity(Intent(this@SetupActivity, OneHandedActivity::class.java))
+                }
+                addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(handValue)
             }
         }
 
@@ -315,9 +344,9 @@ class SetupActivity : AppCompatActivity() {
             titleView, blurbView, s1.row, s2.row, scopeView,
             autocorrectToggle, swipeToggle, suggestionsToggle, autocapToggle, autoperiodToggle,
             hapticsToggle,
-            returnToggle, emojiToggle,
+            returnToggle, emojiToggle, hideToggle, clipboardToggle,
             voiceRow, voiceStatus!!,
-            layoutRow, heightRow, correctionRow, swipeRow, emojiRow, wordsRow, tryRow,
+            layoutRow, heightRow, handRow, correctionRow, swipeRow, emojiRow, wordsRow, tryRow,
         ).forEach { root.addView(it) }
 
         // Reflect the keyboard's real state on the chevron (▴ open / ▾ closed), however it's toggled.
@@ -329,6 +358,7 @@ class SetupActivity : AppCompatActivity() {
         refreshVoice()
         refreshLayout()
         refreshHeight()
+        refreshHand()
         refreshSetupState()
 
         // Scrollable: in portrait the setup content is taller than the Light Phone screen.
@@ -342,6 +372,7 @@ class SetupActivity : AppCompatActivity() {
         super.onResume()
         refreshLayout()       // reflect a layout chosen on the picker page
         refreshHeight()       // reflect a height chosen on the picker page
+        refreshHand()         // ...and a one-handed side chosen on its page, or from the tools page
         refreshCorrection()   // ...and a strength or delete-key choice made on the autocorrect page
         refreshWords()        // reflect words added or removed on the word-list page
         refreshSetupState()   // steps may have been completed over in system settings
@@ -425,6 +456,14 @@ class SetupActivity : AppCompatActivity() {
     }
 
     /** Update the current-height name shown on the keyboard-height row. */
+    private fun refreshHand() {
+        handValue?.text = when (Prefs.oneHanded(this)) {
+            Prefs.HAND_LEFT -> getString(R.string.hand_left)
+            Prefs.HAND_RIGHT -> getString(R.string.hand_right)
+            else -> getString(R.string.hand_off)
+        }
+    }
+
     private fun refreshHeight() {
         heightValue?.text = heightName(Prefs.keyHeight(this))
     }

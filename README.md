@@ -1,19 +1,19 @@
 <img src="docs/icon.png" alt="" width="72" />
 
-<img src="assets/images/example.png" alt="Light Keyboard">
+<img src="assets/images/example.png" alt="Bright Keyboard">
 
 A clone of the Light Phone 3's built-in keyboard, for any app — with swipe typing and a
 bundled-dictionary autocorrect.
 
 ## Install via BrightMarket
 
-[**⬇ Download the latest APK**](https://github.com/gi-os/LightKeyboard/releases/latest) · free, open source.
+[**⬇ Download the latest APK**](https://github.com/gi-os/BrightKeyboard/releases/latest) · free, open source.
 
 <p align="center">
-  <img src="https://gi-os.github.io/brightmarket-index/assets/qr/LightKeyboard.png" alt="Scan to open LightKeyboard in BrightMarket" width="180" />
+  <img src="https://gi-os.github.io/brightmarket-index/assets/qr/BrightKeyboard.png" alt="Scan to open BrightKeyboard in BrightMarket" width="180" />
 </p>
 
-Scan the code above with **BrightMarket** installed to open LightKeyboard there and
+Scan the code above with **BrightMarket** installed to open BrightKeyboard there and
 install or update it directly. Don't have BrightMarket yet? Get it, and browse
 every Bright app, at
 **[brightmarket.gzl.dev](https://brightmarket.gzl.dev)**.
@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.2.x** (tag `v1.2.<n>`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v1.3.x** (tag `v1.3.<n>`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -49,14 +49,14 @@ remove the word your spelling most obviously matches.
 **With [Obtainium](https://github.com/ImranR98/Obtainium)** (recommended — keeps you updated):
 
 1. Install Obtainium.
-2. Add an app, and give it this repository: `https://github.com/gi-os/LightKeyboard`
+2. Add an app, and give it this repository: `https://github.com/gi-os/BrightKeyboard`
 3. It installs the latest release and tells you when a new one ships.
 
 **Or by hand**: grab the APK from [Releases](../../releases) and open it.
 
-**Turn it on** — Light Keyboard's own setup screen has both steps:
+**Turn it on** — Bright Keyboard's own setup screen has both steps:
 
-1. **Enable Light Keyboard** — opens Android's keyboard settings, where you switch it on.
+1. **Enable Bright Keyboard** — opens Android's keyboard settings, where you switch it on.
 2. **Choose it as your keyboard** — makes it the active input method.
 
 That's it — under five minutes, most of it Android's own settings UI.
@@ -102,7 +102,24 @@ Optional settings, all in the app itself:
   suggestion strip is listed under the same screen, with a ✕ to put it back.
 - **Auto-Capitalize** / **Auto-Period** (both on by default) — capitalize sentence starts; double-tap
   space for a period.
-- **Return key** / **Emoji keyboard** (both on by default) — show or hide those keys.
+- **Return key** / **Tools key** (both on by default) — show or hide those keys. The tools key is
+  where the emoji key used to be, and it opens the tools page described below.
+- **Hide-keyboard key** (off by default) — a key in the bottom row that closes the keyboard without
+  leaving the field. Off by default because the back gesture already does this, and the bottom row is
+  narrow. Turn it on if that is the key your thumb reaches for.
+- **The tools page** — the tools key opens a page of five tiles: **Clipboard**, **Symbols**,
+  **One-handed**, **Height** and **Settings**. Its bottom row is the same row you came from, so the
+  emoji key sits on exactly the pixels the tools key did. Emoji are one tap further in than they were,
+  and that tap lands where the first one did.
+- **Clipboard history** (on by default) — the last two dozen things you copied, newest first, three to
+  a page. Tap one to paste it. Tap the pin beside it to keep it; pinned clips survive **Clear** and
+  never fall off the end. A keyboard is the one kind of app Android lets read the clipboard while
+  another app is in front, which is what makes this possible at all. It stays on the phone: nothing
+  in this app touches the network. A clip the copying app marked sensitive, which is what a password
+  manager does, is never recorded. Turning the setting off clears what is already stored.
+- **One-handed** — crowd the keys against the left or right edge so a thumb can reach all of them. The
+  strip this frees carries one button that puts the keyboard back to full width, so it can always be
+  undone without finding the setting. The tools page toggles it; the settings page chooses the side.
 - **Emoji** — every emoji, not a fixed 24. The panel scrolls, with a jump per category and the ones
   you used lately at the top, and anything this phone's font cannot draw is left out rather than shown
   as a box. Press the magnifier to search by name: `pizza` finds 🍕 and so does `hungry`. Pick a
@@ -166,7 +183,7 @@ keyPassword=…
 ```
 
 Debug builds share that key and the same `applicationId` (no `.debug` suffix), so `adb install -r`
-replaces an installed release in place rather than leaving a second Light Keyboard in the input-method
+replaces an installed release in place rather than leaving a second Bright Keyboard in the input-method
 list. Coming from the upstream app, or from a build made before this key existed: Android refuses the
 update because the certificate differs — uninstall the old one first.
 
@@ -193,6 +210,32 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v1.3.x** (2026-09-17) — **Renamed to Bright Keyboard. A tools page behind the emoji key, with
+  a clipboard history and one-handed mode. A key that hides the keyboard.**
+
+  The repository is now `gi-os/BrightKeyboard` and the app is called Bright Keyboard, which puts it
+  with the rest of the Bright\* set. The package name has not changed, so this installs over an
+  existing copy as an ordinary update. Old GitHub links redirect.
+
+  **The emoji key became a tools key.** One keyboard key cannot lead to five things, so it now opens a
+  page and the five things are on it. The page's bottom row is a copy of the row you pressed the key
+  in — same keys, same widths, same order — with the emoji key where the tools key was. Emoji cost one
+  more tap than before, but the second tap is in the same place as the first, which is one movement
+  rather than two. Holding the tools key still swaps keyboards, as holding the emoji key did.
+
+  **Clipboard history.** The last 24 clips, three to a page, pinned ones kept. Paged rather than
+  scrolled: the emoji grid scrolls, and that scroll already shares a finger with swipe typing and with
+  swipe-to-dismiss. Two arrows cost one row and no ambiguity, which on a list this short is the better
+  trade. Clips marked sensitive by the app that copied them are not recorded, and nothing here is
+  sent anywhere.
+
+  **One-handed.** The keys take four fifths of the width and sit against whichever edge you choose.
+  The empty strip is a single button that puts them back. Swipe typing needs no adjustment for it:
+  the decoder is fed key positions measured from the laid-out keys, so a narrower keyboard is just a
+  different set of positions.
+
+  **A hide key**, off by default, in the bottom row beside Return.
 
 - **v1.2.x** (2026-09-13) — **Every emoji, with search. A swipe decoder that reads
   corners. A key-vibration switch. A hold on the emoji key to swap keyboards.**

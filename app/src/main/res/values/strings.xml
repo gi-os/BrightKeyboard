@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Light Keyboard</string>
-    <string name="setup_title">Light Keyboard</string>
+    <string name="app_name">Bright Keyboard</string>
+    <string name="setup_title">Bright Keyboard</string>
     <string name="setup_blurb">A minimal black-and-white keyboard.</string>
     <string name="setup_try">Try the keyboard here…</string>
-    <string name="setup_step1">1. Enable Light Keyboard</string>
+    <string name="setup_step1">1. Enable Bright Keyboard</string>
     <string name="setup_step2">2. Choose it as your keyboard</string>
-    <string name="setup_scope">Light’s own tools — Messages, Notes, Directory — draw their keyboard themselves and keep it whatever you choose here. Light Keyboard appears in the apps you install yourself.</string>
+    <string name="setup_scope">Light’s own tools — Messages, Notes, Directory — draw their keyboard themselves and keep it whatever you choose here. Bright Keyboard appears in the apps you install yourself.</string>
     <string name="setup_autocorrect">Autocorrect</string>
     <string name="setup_swipe">Swipe typing</string>
     <string name="setup_suggestions">Suggestions</string>
@@ -30,7 +30,28 @@
     <string name="setup_layout">Keyboard layout</string>
     <string name="setup_height">Keyboard height</string>
     <string name="setup_returnkey">Return key</string>
-    <string name="setup_emojikey">Emoji keyboard</string>
+    <string name="setup_emojikey">Tools key</string>
+    <string name="setup_hidekey">Hide-keyboard key</string>
+    <string name="setup_clipboard">Clipboard history</string>
+    <string name="setup_onehanded">One-handed</string>
+
+    <!-- The tools page, reached from the tools key in the bottom row. -->
+    <string name="tool_clipboard">Clipboard</string>
+    <string name="tool_symbols">Symbols</string>
+    <string name="tool_one_handed">One-handed</string>
+    <string name="tool_full_width">Full width</string>
+    <string name="tool_height">Height</string>
+    <string name="tool_settings">Settings</string>
+    <string name="clip_clear">Clear</string>
+    <string name="clip_empty">Nothing copied yet. What you copy in other apps shows up here.</string>
+    <string name="clip_off">Clipboard history is off. Turn it on in Settings.</string>
+
+    <!-- One-handed, in settings. -->
+    <string name="hand_title">One-handed</string>
+    <string name="hand_off">Off</string>
+    <string name="hand_left">Left</string>
+    <string name="hand_right">Right</string>
+    <string name="hand_blurb">Crowd the keys against one edge so a thumb can reach all of them. The empty strip carries a button that puts the keyboard back to full width.</string>
     <string name="setup_haptics">Key vibration</string>
     <string name="layout_title">Keyboard layout</string>
     <string name="layout_back">← Back</string>

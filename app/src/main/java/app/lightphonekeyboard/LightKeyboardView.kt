@@ -13,6 +13,7 @@ import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
 import android.view.inputmethod.InputMethodManager
+import app.lightphonekeyboard.text.Clips
 import app.lightphonekeyboard.text.GestureDecoder
 import app.lightphonekeyboard.text.KeyGrid
 import app.lightphonekeyboard.text.Keypad
@@ -116,6 +117,20 @@ class LightKeyboardView @JvmOverloads constructor(
 
         /** The panel was left or reopened, so any running search has to be abandoned. */
         fun onEmojiPanelClosed()
+
+        /**
+         * Insert a clip whole.
+         *
+         * Separate from [onText] because that one is the single-character path: it feeds the
+         * corrector, tracks the word being composed and can be retracted a character at a time. A
+         * clip is arbitrary text of any length, and running it through that machinery would leave
+         * the keyboard believing the last word of a pasted paragraph was something the user typed.
+         */
+        fun onPaste(text: String)
+
+        /** A tools tile that opens a settings screen. The IME owns starting activities. */
+        fun onOpenSettings()
+        fun onOpenHeight()
         /** Listening surface tapped — cancel dictation. */
         fun onMicCancel()
 
@@ -170,6 +185,43 @@ class LightKeyboardView @JvmOverloads constructor(
         const val MIC = "__MIC__"
 
         /**
+         * The bottom-row key that opens the tools page. Where the emoji key used to be, and still
+         * controlled by the same setting — emoji are one tap further in, behind [EMOJI] on that page.
+         */
+        const val TOOLS = "__TOOLS__"
+
+        /** Close the keyboard without leaving the field. Off by default; see [Prefs.hideKey]. */
+        const val HIDE = "__HIDE__"
+
+        // The tools page. Tiles carry a word rather than an icon: there are five of them, they are
+        // reached deliberately rather than in the middle of typing, and a page of unlabelled glyphs
+        // is a page nobody reads twice.
+        const val TOOL_CLIPS = "__TOOL_CLIPS__"
+        const val TOOL_SYMBOLS = "__TOOL_SYMBOLS__"
+        const val TOOL_HAND = "__TOOL_HAND__"
+        const val TOOL_HEIGHT = "__TOOL_HEIGHT__"
+        const val TOOL_SETTINGS = "__TOOL_SETTINGS__"
+
+        /** Puts a one-handed keyboard back to full width. Lives in the strip the narrowing freed. */
+        const val HAND_RESET = "__HAND_RESET__"
+
+        // The clipboard page: three clips to a page, a pin beside each, and a pager below.
+        const val CLIP_BACK = "__CLIP_BACK__"
+        const val CLIP_PREV = "__CLIP_PREV__"
+        const val CLIP_NEXT = "__CLIP_NEXT__"
+        const val CLIP_CLEAR = "__CLIP_CLEAR__"
+        const val CLIP_CELL_PREFIX = "__CLIP_AT_"
+        const val CLIP_PIN_PREFIX = "__CLIP_PIN_"
+        fun clipCell(i: Int) = "$CLIP_CELL_PREFIX${i}__"
+        fun clipPin(i: Int) = "$CLIP_PIN_PREFIX${i}__"
+        fun isClipCell(id: String) = id.startsWith(CLIP_CELL_PREFIX)
+        fun isClipPin(id: String) = id.startsWith(CLIP_PIN_PREFIX)
+        private fun suffixIndex(id: String, prefix: String): Int =
+            id.substring(prefix.length, id.length - 2).toIntOrNull() ?: -1
+        fun clipCellIndex(id: String) = if (isClipCell(id)) suffixIndex(id, CLIP_CELL_PREFIX) else -1
+        fun clipPinIndex(id: String) = if (isClipPin(id)) suffixIndex(id, CLIP_PIN_PREFIX) else -1
+
+        /**
          * Switch to another keyboard. Only ever laid out when the phone has more than one enabled —
          * see [applyPrefs] — because on a phone with only this keyboard installed it is a key that
          * does nothing, and a bottom row is too narrow to spend on one of those.
@@ -200,20 +252,20 @@ class LightKeyboardView @JvmOverloads constructor(
             listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
             listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
             listOf(Key.SHIFT, "z", "x", "c", "v", "b", "n", "m", Key.BACKSPACE),
-            listOf(Key.SYMBOLS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
+            listOf(Key.SYMBOLS, Key.GLOBE, Key.TOOLS, Key.SPACE, Key.MIC, Key.HIDE, Key.ENTER),
         )
         // French AZERTY and German QWERTZ — same control keys, only the three letter rows differ.
         val azerty = listOf(
             listOf("a", "z", "e", "r", "t", "y", "u", "i", "o", "p"),
             listOf("q", "s", "d", "f", "g", "h", "j", "k", "l", "m"),
             listOf(Key.SHIFT, "w", "x", "c", "v", "b", "n", Key.BACKSPACE),
-            listOf(Key.SYMBOLS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
+            listOf(Key.SYMBOLS, Key.GLOBE, Key.TOOLS, Key.SPACE, Key.MIC, Key.HIDE, Key.ENTER),
         )
         val qwertz = listOf(
             listOf("q", "w", "e", "r", "t", "z", "u", "i", "o", "p"),
             listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
             listOf(Key.SHIFT, "y", "x", "c", "v", "b", "n", "m", Key.BACKSPACE),
-            listOf(Key.SYMBOLS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
+            listOf(Key.SYMBOLS, Key.GLOBE, Key.TOOLS, Key.SPACE, Key.MIC, Key.HIDE, Key.ENTER),
         )
         /**
          * The phone pad. Three rows of digits with the control keys down the right-hand side, which is
@@ -227,23 +279,38 @@ class LightKeyboardView @JvmOverloads constructor(
             listOf(Key.pad(1), Key.pad(2), Key.pad(3), Key.BACKSPACE),
             listOf(Key.pad(4), Key.pad(5), Key.pad(6), Key.SHIFT),
             listOf(Key.pad(7), Key.pad(8), Key.pad(9), Key.ENTER),
-            listOf(Key.SYMBOLS, Key.GLOBE, Key.pad(0), Key.EMOJI, Key.MIC),
+            listOf(Key.SYMBOLS, Key.GLOBE, Key.pad(0), Key.TOOLS, Key.MIC, Key.HIDE),
         )
         val symbols = listOf(
             listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
             listOf("-", "/", ":", ";", "(", ")", "$", "&", "@", "\""),
             listOf(Key.MORE, ".", ",", "?", "!", "'", Key.BACKSPACE),
-            listOf(Key.LETTERS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
+            listOf(Key.LETTERS, Key.GLOBE, Key.TOOLS, Key.SPACE, Key.MIC, Key.HIDE, Key.ENTER),
         )
         val more = listOf(
             listOf("[", "]", "{", "}", "#", "%", "^", "*", "+", "="),
             listOf("_", "\\", "|", "~", "<", ">", "€", "£", "¥"),
             listOf(Key.SYMBOLS, ".", ",", "?", "!", "'", Key.BACKSPACE),
-            listOf(Key.LETTERS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.ENTER),
+            listOf(Key.LETTERS, Key.GLOBE, Key.TOOLS, Key.SPACE, Key.MIC, Key.HIDE, Key.ENTER),
+        )
+
+        /**
+         * The tools page, reached from the bottom row's [Key.TOOLS].
+         *
+         * Its last row is deliberately the *same shape* as the letter layers' bottom row — same keys,
+         * same weights, same order — so that [Key.EMOJI] lands on exactly the pixels [Key.TOOLS] was
+         * on. Emoji is the thing people come here for most, and the second tap lands where the first
+         * one did, which makes it one movement rather than two.
+         */
+        val tools = listOf(
+            listOf(Key.TOOL_CLIPS),
+            listOf(Key.TOOL_SYMBOLS, Key.TOOL_HAND),
+            listOf(Key.TOOL_HEIGHT, Key.TOOL_SETTINGS),
+            listOf(Key.LETTERS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.HIDE, Key.ENTER),
         )
     }
 
-    private enum class Layer { LETTERS, SYMBOLS, MORE, EMOJI }
+    private enum class Layer { LETTERS, SYMBOLS, MORE, EMOJI, TOOLS, CLIPS }
 
     private var layer = Layer.LETTERS
     private var shifted = true
@@ -257,7 +324,14 @@ class LightKeyboardView @JvmOverloads constructor(
     private var swipeTyping = true
     private var haptics = true
     private var suggestionsOn = false
+    private var oneHanded = Prefs.HAND_OFF
     private val hiddenKeys = HashSet<String>()   // control keys removed by their settings toggles
+
+    /** The clipboard history as the page last read it, newest first. See [Clips]. */
+    private var clips: List<Clips.Clip> = emptyList()
+
+    /** Which page of three the clipboard is showing. */
+    private var clipPage = 0
 
     // Voice-dictation listening overlay (drawn instead of keys while the recognizer is active).
     private var listening = false
@@ -380,8 +454,14 @@ class LightKeyboardView @JvmOverloads constructor(
         // stored as a setting, because the answer changes whenever the user installs, removes or
         // enables a keyboard in Android settings — and this runs on every reset(), so it is current.
         if (!hasOtherInputMethods()) hiddenKeys.add(Key.GLOBE)
-        if (!Prefs.emojiKey(context)) hiddenKeys.add(Key.EMOJI)
+        if (!Prefs.emojiKey(context)) hiddenKeys.add(Key.TOOLS)
         if (!Prefs.returnKey(context)) hiddenKeys.add(Key.ENTER)
+        if (!Prefs.hideKey(context)) hiddenKeys.add(Key.HIDE)
+        oneHanded = Prefs.oneHanded(context)
+        // Read once per reset() rather than per frame: the page draws them and the paste path reads
+        // them, and SharedPreferences on the draw path is a file read under the user's thumb.
+        clips = if (Prefs.clipboardEnabled(context)) Clips.parse(Prefs.clips(context)) else emptyList()
+        clipPage = 0
     }
 
     /**
@@ -518,7 +598,8 @@ class LightKeyboardView @JvmOverloads constructor(
                 }
                 Layer.SYMBOLS -> Layout.symbols
                 Layer.MORE -> Layout.more
-                Layer.EMOJI -> emptyList()
+                Layer.TOOLS -> Layout.tools
+                Layer.EMOJI, Layer.CLIPS -> emptyList()
             }
             // Drop any control keys turned off in settings (mic / emoji / return); the row reflows.
             return if (hiddenKeys.isEmpty()) rows else rows.map { row -> row.filter { it !in hiddenKeys } }
@@ -533,6 +614,7 @@ class LightKeyboardView @JvmOverloads constructor(
         val rowCount = when {
             listening -> Layout.letters.size           // keep height constant while listening
             layer == Layer.EMOJI -> emojiRowCount + 1
+            layer == Layer.CLIPS -> CLIP_ROWS + 1
             else -> currentRows.size
         }
         val h = stripTop + padTop + rowCount * rowPitch + padBottom
@@ -559,9 +641,10 @@ class LightKeyboardView @JvmOverloads constructor(
         placed.clear()
         letterKeys.clear()
         if (width == 0 || height == 0 || listening) return
+        if (narrowed) layoutHandReset()
         if (layer == Layer.EMOJI) { layoutEmoji(); return }
+        if (layer == Layer.CLIPS) { layoutClips(); return }
 
-        val w = width.toFloat()
         val h = height.toFloat()
         val rows = currentRows
         val n = rows.size
@@ -574,7 +657,7 @@ class LightKeyboardView @JvmOverloads constructor(
             val bandBottom = if (i == n - 1) h else top + padTop + (i + 1) * rowPitch
             val visTop = top + padTop + i * rowPitch + keyGap
             val visBottom = visTop + rowKeyH
-            layoutRow(rows[i], bandTop, bandBottom, visTop, visBottom, w)
+            layoutRow(rows[i], bandTop, bandBottom, visTop, visBottom)
         }
         for (k in placed) if (isLetter(k.id)) letterKeys.add(k)
         publishKeyGrid()
@@ -594,20 +677,24 @@ class LightKeyboardView @JvmOverloads constructor(
 
     private fun layoutRow(
         row: List<String>, bandTop: Float, bandBottom: Float,
-        visTop: Float, visBottom: Float, w: Float,
+        visTop: Float, visBottom: Float,
     ) {
+        if (row.isEmpty()) return
         val totalWeight = row.sumOf { weightFor(it).toDouble() }.toFloat()
-        val drawLeft = padSide
-        val drawW = w - padSide * 2
+        if (totalWeight <= 0f) return
+        val drawLeft = contentLeft + padSide
+        val drawW = contentW - padSide * 2
         var cum = 0f
         for ((j, id) in row.withIndex()) {
             val cellLeft = drawLeft + drawW * (cum / totalWeight)
             cum += weightFor(id)
             val cellRight = drawLeft + drawW * (cum / totalWeight)
-            // Hit rects tile [0, w]: edge keys reach the screen edge; interior boundaries sit on the
-            // visible cell edge, i.e. the midline of the gutter between two keys (nearest-key by design).
-            val hitLeft = if (j == 0) 0f else cellLeft
-            val hitRight = if (j == row.size - 1) w else cellRight
+            // Hit rects tile the content band: edge keys reach its edge; interior boundaries sit on
+            // the visible cell edge, i.e. the midline of the gutter (nearest-key by design). The band
+            // is the whole screen unless the keyboard has been narrowed to one hand, and then the
+            // strip beyond it belongs to the button that puts it back.
+            val hitLeft = if (j == 0) contentLeft else cellLeft
+            val hitRight = if (j == row.size - 1) contentLeft + contentW else cellRight
             placed.add(
                 PlacedKey(
                     id,
@@ -630,8 +717,8 @@ class LightKeyboardView @JvmOverloads constructor(
      * screen keeps both of those at two dozen entries no matter how far down the list goes.
      */
     private fun layoutEmoji() {
-        val w = width.toFloat()
-        val drawW = w - padSide * 2
+        val w = contentLeft + contentW
+        val drawW = contentW - padSide * 2
         val top = stripTop
         emojiGlyphs = emojiPanel.glyphs()
 
@@ -650,9 +737,9 @@ class LightKeyboardView @JvmOverloads constructor(
             for (c in 0 until emojiCols) {
                 val cell = r * emojiCols + c
                 if (cell >= emojiGlyphs.size) break
-                val cellLeft = padSide + drawW * (c.toFloat() / emojiCols)
-                val cellRight = padSide + drawW * ((c + 1).toFloat() / emojiCols)
-                val hitLeft = if (c == 0) 0f else cellLeft
+                val cellLeft = contentLeft + padSide + drawW * (c.toFloat() / emojiCols)
+                val cellRight = contentLeft + padSide + drawW * ((c + 1).toFloat() / emojiCols)
+                val hitLeft = if (c == 0) contentLeft else cellLeft
                 val hitRight = if (c == emojiCols - 1) w else cellRight
                 // Clipped to the grid band so a partially scrolled row cannot be tapped where it
                 // overlaps the controls, and cannot be drawn over them either.
@@ -692,10 +779,10 @@ class LightKeyboardView @JvmOverloads constructor(
         ids.add(Key.EMOJI_SEARCH); weights.add(1.5f)
 
         val total = weights.sum()
-        var x = padSide
+        var x = contentLeft + padSide
         for (k in ids.indices) {
             val cw = drawW * (weights[k] / total)
-            val hitLeft = if (k == 0) 0f else x
+            val hitLeft = if (k == 0) contentLeft else x
             val hitRight = if (k == ids.size - 1) w else x + cw
             placed.add(
                 PlacedKey(
@@ -706,6 +793,145 @@ class LightKeyboardView @JvmOverloads constructor(
             )
             x += cw
         }
+    }
+
+    // ------------------------------------------------------ one-handed / tools / clipboard
+
+    /** True when the keys are crowded against one edge. See [Prefs.oneHanded]. */
+    private val narrowed: Boolean get() = oneHanded != Prefs.HAND_OFF
+
+    /**
+     * Width of the band the keys are laid out in. Four fifths of the screen when narrowed, which is
+     * about the reach of one thumb on this phone without also making every key too small to hit.
+     */
+    private val contentW: Float
+        get() = if (narrowed) width * ONE_HANDED_FRACTION else width.toFloat()
+
+    /** Left edge of that band. */
+    private val contentLeft: Float
+        get() = if (oneHanded == Prefs.HAND_RIGHT) width - contentW else 0f
+
+    /**
+     * The button in the strip a narrowed keyboard leaves empty.
+     *
+     * Full height of the key area and the full width of the strip. Nothing else can go there, and a
+     * user who narrowed the keyboard by accident should not have to find the setting to undo it.
+     */
+    private fun layoutHandReset() {
+        val left = if (oneHanded == Prefs.HAND_RIGHT) 0f else contentW
+        val right = if (oneHanded == Prefs.HAND_RIGHT) contentLeft else width.toFloat()
+        if (right - left < 1f) return
+        val visInset = dpf(4)
+        placed.add(
+            PlacedKey(
+                Key.HAND_RESET,
+                RectF(left, stripTop, right, height.toFloat()),
+                RectF(left + visInset, stripTop + padTop + keyGap, right - visInset, height - padBottom),
+            ),
+        )
+    }
+
+    /**
+     * The clipboard page: [CLIP_ROWS] clips, each with a pin beside it, over one row of controls.
+     *
+     * Paged rather than scrolled, deliberately. The emoji grid scrolls, and that scroll shares a
+     * touch path with swipe typing and with swipe-to-dismiss — three gestures reading the same
+     * finger. The clipboard holds a couple of dozen short strings; arrows cost one row and no
+     * ambiguity at all, which on a list this size is the better trade.
+     */
+    private fun layoutClips() {
+        val top = stripTop
+        val gridBottom = top + padTop + CLIP_ROWS * rowPitch
+        val left = contentLeft + padSide
+        val right = contentLeft + contentW - padSide
+        val pinW = (right - left) * 0.16f
+        val first = clipPage * CLIP_ROWS
+        for (r in 0 until CLIP_ROWS) {
+            val i = first + r
+            if (i >= clips.size) break
+            val bandTop = top + padTop + r * rowPitch
+            val visTop = bandTop + keyGap
+            val visBottom = visTop + rowKeyH
+            placed.add(
+                PlacedKey(
+                    Key.clipCell(i),
+                    RectF(contentLeft, bandTop, right - pinW, bandTop + rowPitch),
+                    RectF(left, visTop, right - pinW - keyGap, visBottom),
+                ),
+            )
+            placed.add(
+                PlacedKey(
+                    Key.clipPin(i),
+                    RectF(right - pinW, bandTop, contentLeft + contentW, bandTop + rowPitch),
+                    RectF(right - pinW + keyGap, visTop, right, visBottom),
+                ),
+            )
+        }
+        layoutClipControls(gridBottom)
+    }
+
+    private fun layoutClipControls(gridBottom: Float) {
+        val h = height.toFloat()
+        val visTop = gridBottom + keyGap
+        val visBottom = visTop + rowKeyH
+        val drawW = contentW - padSide * 2
+        val ids = listOf(Key.CLIP_BACK, Key.CLIP_PREV, Key.CLIP_NEXT, Key.CLIP_CLEAR)
+        val weights = listOf(1.5f, 1f, 1f, 1.5f)
+        val total = weights.sum()
+        var x = contentLeft + padSide
+        for (k in ids.indices) {
+            val cw = drawW * (weights[k] / total)
+            val hitLeft = if (k == 0) contentLeft else x
+            val hitRight = if (k == ids.size - 1) contentLeft + contentW else x + cw
+            placed.add(
+                PlacedKey(ids[k], RectF(hitLeft, gridBottom, hitRight, h), RectF(x, visTop, x + cw, visBottom)),
+            )
+            x += cw
+        }
+    }
+
+    /** Open the tools page. Reads nothing: everything on it was cached by [applyPrefs]. */
+    private fun openTools() {
+        listener?.onEmojiPanelClosed()
+        variantGlyphs = emptyList()
+        clearEmojiGesture()
+        layer = Layer.TOOLS
+        rebuild()
+    }
+
+    /**
+     * Open the clipboard page, re-reading the history first.
+     *
+     * Re-read here rather than trusted from [applyPrefs], because the interesting case is copying
+     * something in another app and coming straight back — and that happens without the field ever
+     * being re-focused, so nothing else would have refreshed it.
+     */
+    private fun openClips() {
+        clips = if (Prefs.clipboardEnabled(context)) Clips.parse(Prefs.clips(context)) else emptyList()
+        clipPage = 0
+        layer = Layer.CLIPS
+        rebuild()
+    }
+
+    private fun clipPages(): Int = ((clips.size + CLIP_ROWS - 1) / CLIP_ROWS).coerceAtLeast(1)
+
+    private fun setOneHanded(value: String) {
+        oneHanded = value
+        Prefs.setOneHanded(context, value)
+        rebuild()
+    }
+
+    /**
+     * Which side one-handed mode starts on. The right, because most people are right-handed and the
+     * tile is a toggle rather than a chooser — the setting screen has both, this has to pick one.
+     */
+    private fun defaultHand(): String = Prefs.HAND_RIGHT
+
+    private fun writeClips(updated: List<Clips.Clip>) {
+        clips = updated
+        Prefs.setClips(context, Clips.serialize(updated))
+        clipPage = clipPage.coerceIn(0, clipPages() - 1)
+        rebuild()
     }
 
     /** Category icons, cached — [EmojiPanel.categoryIcons] allocates and the draw path is hot. */
@@ -816,6 +1042,7 @@ class LightKeyboardView @JvmOverloads constructor(
         }
         if (layer == Layer.EMOJI && variantGlyphs.isNotEmpty()) drawVariantRow(canvas)
         if (layer == Layer.EMOJI && emojiGlyphs.isEmpty()) drawEmojiEmpty(canvas)
+        if (layer == Layer.CLIPS && clips.isEmpty()) drawClipsEmpty(canvas)
         if (stripH > 0f) drawStrip(canvas)
         if (tracing || trailFadeFrom != 0L) drawTrail(canvas)
     }
@@ -992,10 +1219,57 @@ class LightKeyboardView @JvmOverloads constructor(
             return
         }
         if (Key.isEmojiCat(id)) { drawEmojiCategory(canvas, pk); return }
+        if (Key.isClipCell(id)) { drawClip(canvas, pk); return }
+        if (Key.isClipPin(id)) { drawClipPin(canvas, pk); return }
         val size = if (layer == Layer.EMOJI) emojiTextSize else if (id.length == 1) keyTextSize else labelTextSize
         textPaint.textSize = size
         val baseline = pk.vis.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f
         canvas.drawText(labelFor(id), pk.vis.centerX(), baseline, textPaint)
+    }
+
+    /**
+     * One clip: its first line, left-aligned, ellipsised.
+     *
+     * Left-aligned and not centred, which is the only thing on this keyboard that is. A centred clip
+     * would put the *middle* of each string under the eye, and what tells two clips apart is nearly
+     * always how they start.
+     */
+    private fun drawClip(canvas: Canvas, pk: PlacedKey) {
+        val clip = clips.getOrNull(Key.clipCellIndex(pk.id)) ?: return
+        textPaint.textSize = labelTextSize
+        textPaint.textAlign = Paint.Align.LEFT
+        val inset = dpf(10)
+        val baseline = pk.vis.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f
+        canvas.drawText(
+            fitToWidth(Clips.preview(clip.text), pk.vis.width() - inset * 2),
+            pk.vis.left + inset, baseline, textPaint,
+        )
+        textPaint.textAlign = Paint.Align.CENTER
+    }
+
+    /** The pin beside a clip: filled when pinned, outlined when not. */
+    private fun drawClipPin(canvas: Canvas, pk: PlacedKey) {
+        val clip = clips.getOrNull(Key.clipPinIndex(pk.id)) ?: return
+        drawIcon(
+            canvas,
+            if (clip.pinned) R.drawable.ic_kb_pin_on else R.drawable.ic_kb_pin_off,
+            pk.vis, if (compact) dpf(8) else dpf(12),
+        )
+    }
+
+    /**
+     * What the clipboard page says when it has nothing to show. Two reasons, opposite responses:
+     * nothing has been copied yet, or the history is switched off in settings and never will be.
+     */
+    private fun drawClipsEmpty(canvas: Canvas) {
+        val message = context.getString(
+            if (Prefs.clipboardEnabled(context)) R.string.clip_empty else R.string.clip_off,
+        )
+        textPaint.textSize = labelTextSize
+        drawWrappedCentered(
+            canvas, message, contentLeft + contentW / 2f,
+            stripTop + padTop + rowPitch * CLIP_ROWS / 2f, contentW - dpf(48), textPaint,
+        )
     }
 
     /**
@@ -1072,6 +1346,12 @@ class LightKeyboardView @JvmOverloads constructor(
 
     private fun iconFor(id: String): Int? = when (id) {
         Key.EMOJI -> R.drawable.ic_kb_emoji
+        Key.TOOLS -> R.drawable.ic_kb_tools
+        Key.HIDE -> R.drawable.ic_kb_hide
+        Key.HAND_RESET -> R.drawable.ic_kb_expand
+        Key.CLIP_BACK -> R.drawable.ic_kb_chevron_down
+        Key.CLIP_PREV -> R.drawable.ic_kb_chevron_left
+        Key.CLIP_NEXT -> R.drawable.ic_kb_chevron_right
         Key.BACKSPACE -> R.drawable.ic_kb_backspace
         Key.ENTER -> R.drawable.ic_kb_enter
         Key.EMOJI_BACK -> R.drawable.ic_kb_chevron_down
@@ -1085,13 +1365,29 @@ class LightKeyboardView @JvmOverloads constructor(
     // Icon inset inside its key. Compact keys are shorter, so the insets shrink too or the glyphs vanish.
     private fun padFor(id: String): Float = when (id) {
         Key.SHIFT -> if (compact) dpf(6) else dpf(9)
-        Key.BACKSPACE, Key.EMOJI_BACK -> if (compact) dpf(7) else dpf(10)
+        Key.BACKSPACE, Key.EMOJI_BACK, Key.CLIP_BACK -> if (compact) dpf(7) else dpf(10)
+        // The strip button is as tall as the whole keyboard; without a large inset its glyph would
+        // be scaled to that height and fill the strip.
+        Key.HAND_RESET -> (minOf(rowKeyH, contentW * (1f - ONE_HANDED_FRACTION)) / 2f - dpf(11))
+            .coerceAtLeast(dpf(2))
         Key.MIC, Key.GLOBE -> if (compact) dpf(6) else dpf(9)
         else -> if (compact) dpf(5) else dpf(7)
     }
 
-    private fun labelFor(id: String): String =
-        if (shifted && layer == Layer.LETTERS && id.length == 1 && id[0].isLetter()) id.uppercase() else id
+    private fun labelFor(id: String): String = when (id) {
+        Key.TOOL_CLIPS -> context.getString(R.string.tool_clipboard)
+        Key.TOOL_SYMBOLS -> context.getString(R.string.tool_symbols)
+        Key.TOOL_HEIGHT -> context.getString(R.string.tool_height)
+        Key.TOOL_SETTINGS -> context.getString(R.string.tool_settings)
+        // The tile says what tapping it will do, not what is currently true: "One-handed" turns it
+        // on, "Full width" turns it off. A tile labelled with a state leaves you guessing which.
+        Key.TOOL_HAND ->
+            context.getString(if (narrowed) R.string.tool_full_width else R.string.tool_one_handed)
+        Key.CLIP_CLEAR -> context.getString(R.string.clip_clear)
+        else ->
+            if (shifted && layer == Layer.LETTERS && id.length == 1 && id[0].isLetter()) id.uppercase()
+            else id
+    }
 
     private fun weightFor(id: String): Float = when {
         id == Key.SPACE -> 5f
@@ -1862,6 +2158,18 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.ENTER -> listener?.onEnter()
             Key.EMOJI -> { openEmoji() }
             Key.EMOJI_BACK -> { closeEmoji() }
+            Key.TOOLS -> openTools()
+            Key.HIDE -> listener?.onDismiss()
+            Key.TOOL_CLIPS -> openClips()
+            Key.TOOL_SYMBOLS -> { layer = Layer.SYMBOLS; rebuild() }
+            Key.TOOL_HEIGHT -> listener?.onOpenHeight()
+            Key.TOOL_SETTINGS -> listener?.onOpenSettings()
+            Key.TOOL_HAND -> setOneHanded(if (narrowed) Prefs.HAND_OFF else defaultHand())
+            Key.HAND_RESET -> setOneHanded(Prefs.HAND_OFF)
+            Key.CLIP_BACK -> { layer = Layer.LETTERS; rebuild() }
+            Key.CLIP_PREV -> { if (clipPage > 0) { clipPage--; rebuild() } }
+            Key.CLIP_NEXT -> { if (clipPage < clipPages() - 1) { clipPage++; rebuild() } }
+            Key.CLIP_CLEAR -> writeClips(Clips.clearUnpinned(clips))
             Key.EMOJI_SEARCH -> listener?.onEmojiSearch()
             Key.SYMBOLS -> { layer = Layer.SYMBOLS; rebuild() }
             Key.MORE -> { layer = Layer.MORE; rebuild() }
@@ -1884,6 +2192,14 @@ class LightKeyboardView @JvmOverloads constructor(
                 // An emoji cell commits on lift, not here — see onTouchEvent. A drag across the grid
                 // is a scroll, and committing on touch-down would insert an emoji every time.
                 if (Key.isEmojiCell(id)) return false
+                if (Key.isClipCell(id)) {
+                    clips.getOrNull(Key.clipCellIndex(id))?.let { listener?.onPaste(it.text) }
+                    return false
+                }
+                if (Key.isClipPin(id)) {
+                    clips.getOrNull(Key.clipPinIndex(id))?.let { writeClips(Clips.togglePin(clips, it.text)) }
+                    return false
+                }
                 if (Key.isPad(id)) {
                     // The keypad's own key. The host holds the digit sequence and the word it is
                     // currently reading, because only it can see the field — see LightImeService.
@@ -2021,6 +2337,13 @@ class LightKeyboardView @JvmOverloads constructor(
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v.toFloat(), resources.displayMetrics)
 
     private companion object {
+        /** Clips on one page of the clipboard. Three, leaving the fourth band for the controls —
+         *  the same four bands every other layer uses, so the keyboard never changes height. */
+        const val CLIP_ROWS = 3
+
+        /** Share of the screen the keys keep when narrowed to one hand. */
+        const val ONE_HANDED_FRACTION = 0.80f
+
         /** Cap on recorded trace points. A word trace across this keyboard is a few dozen; the cap is
          *  a guard against a finger held down for a very long time, not a normal limit. */
         /** A traced word longer than this is not a word, it is a finger wandering. */

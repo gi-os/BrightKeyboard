@@ -22,7 +22,7 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.LightKeyboard">
+        android:theme="@style/Theme.BrightKeyboard">
 
         <!-- The system keyboard (IME). Once enabled + selected, it appears in every text field. -->
         <service
@@ -66,6 +66,12 @@
         <!-- Keyboard height picker (Short / Medium / Tall), opened from setup. -->
         <activity
             android:name=".KeyboardHeightActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <!-- One-handed: off, or crowded against the left or right edge. -->
+        <activity
+            android:name=".OneHandedActivity"
             android:exported="false"
             android:screenOrientation="portrait" />
 

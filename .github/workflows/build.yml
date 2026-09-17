@@ -55,9 +55,9 @@ jobs:
           # versionCode must strictly increase for Android to accept an update; the run number does
           # that for free. versionName is kept equal to the release tag so Obtainium compares like
           # with like — a mismatch there shows as a permanent phantom "update available".
-          # Minor bumped to 1.2 for the full emoji panel and the swipe decoder. CI reads only
-          # major.minor from here, so this line is where a feature release is declared.
-          echo "name=1.2.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          # Minor bumped to 1.3 for the tools page, the clipboard, one-handed and the hide key.
+          # CI reads only major.minor from here, so this line is where a feature release is declared.
+          echo "name=1.3.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       # The typing logic (dictionary, autocorrect, swipe decoding) is pure Kotlin with no Android
@@ -100,7 +100,7 @@ jobs:
           mkdir -p dist
           # Exactly ONE apk per release. Publishing more than one lets Obtainium pick the wrong asset.
           cp app/build/outputs/apk/release/app-release.apk \
-             "dist/LightKeyboard-v${{ steps.version.outputs.name }}.apk"
+             "dist/BrightKeyboard-v${{ steps.version.outputs.name }}.apk"
           ls -la dist
 
       # Debug stays a workflow artifact and is never attached to a release, for the same reason.
@@ -126,7 +126,7 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.name }}
           name: v${{ steps.version.outputs.name }}
-          files: dist/LightKeyboard-*.apk
+          files: dist/BrightKeyboard-*.apk
           make_latest: true
           generate_release_notes: true
 

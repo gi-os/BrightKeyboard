@@ -77,7 +77,7 @@ android {
     buildTypes {
         // Debug shares the release key when one is available — and keeps the same applicationId, with
         // no `.debug` suffix — so `adb install -r` replaces an installed release in place rather than
-        // leaving a second Light Keyboard in the input-method list. Without a key it falls back to the
+        // leaving a second Bright Keyboard in the input-method list. Without a key it falls back to the
         // normal debug signing, so anyone can still clone and build.
         debug {
             if (haveKeystore) signingConfig signingConfigs.release

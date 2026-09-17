@@ -1,0 +1,11 @@
+<!-- An unpinned clip. Outline, so pinned and unpinned differ by fill rather than by shape — the
+     pin is 16% of a row wide and a difference in silhouette at that size is not readable. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="1.5" android:fillColor="#00000000"
+        android:strokeLineJoin="round"
+        android:pathData="M9,3.5 h6 l-1,5 l3.5,3 v1.5 h-11 v-1.5 l3.5,-3 z" />
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="1.5" android:fillColor="#00000000"
+        android:strokeLineCap="round" android:pathData="M12,13 v7.5" />
+</vector>

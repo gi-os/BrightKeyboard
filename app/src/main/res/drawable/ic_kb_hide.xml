@@ -1,0 +1,16 @@
+<!-- Close the keyboard. A keyboard outline with an arrow leaving it downward — the glyph Android
+     itself uses for this, so it needs no explaining. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="1.5" android:fillColor="#00000000"
+        android:pathData="M3.5,4.5 h17 v9 h-17 z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M5.6,6.6 h1.8 v1.8 h-1.8 z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M9,6.6 h1.8 v1.8 h-1.8 z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M12.4,6.6 h1.8 v1.8 h-1.8 z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M15.8,6.6 h1.8 v1.8 h-1.8 z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M7.6,10 h8.8 v1.8 h-8.8 z" />
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="1.5" android:fillColor="#00000000"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M9,17 L12,20 L15,17" />
+</vector>

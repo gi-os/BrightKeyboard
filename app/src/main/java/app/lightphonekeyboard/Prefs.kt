@@ -29,6 +29,15 @@ object Prefs {
     private const val KEY_EMOJI_SUGGEST = "emoji_suggest"
     private const val KEY_SWIPE_STRENGTH = "swipe_strength"
     private const val KEY_SWIPE_ALTERNATES = "swipe_alternates"
+    private const val KEY_HIDE_KEY = "hide_key"
+    private const val KEY_ONE_HANDED = "one_handed"
+    private const val KEY_CLIPBOARD = "clipboard_enabled"
+    private const val KEY_CLIPS = "clipboard_clips"
+
+    /** Which edge the keys crowd onto when the board is narrowed; the stored value of [oneHanded]. */
+    const val HAND_OFF = "off"
+    const val HAND_LEFT = "left"
+    const val HAND_RIGHT = "right"
 
     /** Keyboard letter arrangements; the stored value of [keyLayout]. */
     const val LAYOUT_QWERTY = "qwerty"
@@ -279,6 +288,49 @@ object Prefs {
 
     fun setT9Mode(c: Context, value: String) =
         prefs(c).edit().putString(KEY_T9_MODE, value).apply()
+
+    /**
+     * Show the hide key, which closes the keyboard without leaving the field.
+     *
+     * OFF by default. Android already dismisses the keyboard with the back gesture, so this is a
+     * second way to do something the phone can already do — and the bottom row is six keys wide.
+     * People who reach for it on every other keyboard can switch it on; nobody else pays a key for it.
+     */
+    fun hideKey(c: Context): Boolean = prefs(c).getBoolean(KEY_HIDE_KEY, false)
+
+    fun setHideKey(c: Context, value: Boolean) =
+        prefs(c).edit().putBoolean(KEY_HIDE_KEY, value).apply()
+
+    /**
+     * Narrow the keyboard against one edge so a thumb can reach all of it: [HAND_OFF], [HAND_LEFT]
+     * or [HAND_RIGHT]. The freed strip on the other side carries a single button that puts it back.
+     *
+     * Not persisted as a one-shot: somebody who types one-handed usually types one-handed, and
+     * having to set it again in every field would make it useless.
+     */
+    fun oneHanded(c: Context): String =
+        prefs(c).getString(KEY_ONE_HANDED, HAND_OFF) ?: HAND_OFF
+
+    fun setOneHanded(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_ONE_HANDED, value).apply()
+
+    /**
+     * Keep a short history of what has been copied, so the tools page can paste any of the last few
+     * rather than only the newest. On by default.
+     *
+     * The history never leaves the phone and never reaches the network. It is capped, it drops
+     * anything the source app marked sensitive, and turning this off clears it.
+     */
+    fun clipboardEnabled(c: Context): Boolean = prefs(c).getBoolean(KEY_CLIPBOARD, true)
+
+    fun setClipboardEnabled(c: Context, value: Boolean) =
+        prefs(c).edit().putBoolean(KEY_CLIPBOARD, value).apply()
+
+    /** The clipboard history, newest first. See [app.lightphonekeyboard.text.Clips] for the format. */
+    fun clips(c: Context): String? = prefs(c).getString(KEY_CLIPS, null)
+
+    fun setClips(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_CLIPS, value).apply()
 
     /** Voice dictation (mic key + offline STT). Off by default; turning it on downloads the model. */
     fun voiceEnabled(c: Context): Boolean = prefs(c).getBoolean(KEY_VOICE, false)

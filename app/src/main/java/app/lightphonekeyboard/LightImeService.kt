@@ -1,6 +1,8 @@
 package app.lightphonekeyboard
 
 import android.Manifest
+import android.content.ClipDescription
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.inputmethodservice.InputMethodService
@@ -16,6 +18,7 @@ import android.view.textservice.SuggestionsInfo
 import android.view.textservice.TextInfo
 import android.view.textservice.TextServicesManager
 import app.lightphonekeyboard.text.Alternatives
+import app.lightphonekeyboard.text.Clips
 import app.lightphonekeyboard.text.ContextRanker
 import app.lightphonekeyboard.text.KeyGrid
 import app.lightphonekeyboard.text.Keypad
@@ -109,6 +112,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         engine.prepare()
         initSpell()
         if (Prefs.voiceEnabled(this)) dictation.prepare()   // warm the model if voice is on (and downloaded)
+        startWatchingClipboard()
     }
 
     override fun onCreateInputView(): View {
@@ -167,6 +171,8 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         dictation.destroy()
         spell?.close()
         spell = null
+        try { clipboard?.removePrimaryClipChangedListener(clipWatcher) } catch (e: Exception) { }
+        clipboard = null
         super.onDestroy()
     }
 
@@ -712,7 +718,117 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     }
 
     override fun onDismiss() {
-        requestHideSelf(0) // swipe-down closes the keyboard, the proper Android way
+        requestHideSelf(0) // swipe-down (and the hide key) close the keyboard, the proper Android way
+    }
+
+    /**
+     * Insert a clip whole, without the word machinery touching it.
+     *
+     * Everything the corrector holds is about the word at the cursor, and after a paste that word is
+     * whatever the clip happened to end with — a word the user did not type and must not be corrected
+     * on. So the composing state is cleared first and nothing is requested afterwards.
+     */
+    override fun onPaste(text: String) {
+        val ic = currentInputConnection ?: return
+        if (padOpen) resetPadWord()
+        settleMultiTap()
+        clearUndo()
+        clearAlternatives()
+        lateWord = null
+        lateTerminator = null
+        ic.finishComposingText()
+        ic.commitText(text, 1)
+        keyboard?.showLetters()
+    }
+
+    override fun onOpenSettings() = openScreen(SetupActivity::class.java)
+
+    override fun onOpenHeight() = openScreen(KeyboardHeightActivity::class.java)
+
+    /**
+     * Open one of the app's own screens from the keyboard.
+     *
+     * NEW_TASK because a service has no task of its own to start an activity in, and the keyboard is
+     * dismissed first: the activity is about to cover the field the keyboard was attached to, and one
+     * left on screen over it would be sitting above a field that no longer has focus.
+     */
+    private fun openScreen(screen: Class<*>) {
+        requestHideSelf(0)
+        try {
+            startActivity(
+                Intent(this, screen).addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP,
+                ),
+            )
+        } catch (e: Exception) {
+            // A keyboard that crashes is no keyboard, in every field on the phone. A settings screen
+            // that failed to open is a tap that did nothing.
+        }
+    }
+
+    // ------------------------------------------------------------------ clipboard history
+
+    /**
+     * Watch what gets copied, so the tools page can offer more than the newest clip.
+     *
+     * An input method is the one kind of app Android lets read the clipboard while something else is
+     * in front; ordinary apps get null unless they have focus. That is what makes this possible here
+     * and also why it has to be handled carefully — see [rememberClip].
+     */
+    private val clipWatcher = ClipboardManager.OnPrimaryClipChangedListener { rememberClip() }
+    private var clipboard: ClipboardManager? = null
+
+    private fun startWatchingClipboard() {
+        clipboard = try {
+            getSystemService(ClipboardManager::class.java)?.also {
+                it.addPrimaryClipChangedListener(clipWatcher)
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Record the current clip, unless we should not.
+     *
+     * Three refusals, all deliberate:
+     *
+     *  - the setting is off, in which case nothing is recorded and nothing is kept;
+     *  - the source app marked the clip sensitive ([ClipDescription.EXTRA_IS_SENSITIVE], which is
+     *    what a password manager sets), in which case remembering it is exactly the thing the flag
+     *    exists to prevent;
+     *  - the clip is not text, since this list pastes strings.
+     *
+     * The history never leaves the phone. Nothing in this app touches the network at all.
+     */
+    private fun rememberClip() {
+        if (!Prefs.clipboardEnabled(this)) return
+        val cm = clipboard ?: return
+        try {
+            val description = cm.primaryClipDescription ?: return
+            if (!description.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) &&
+                !description.hasMimeType(ClipDescription.MIMETYPE_TEXT_HTML)
+            ) return
+            if (isSensitive(description)) return
+            val text = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString() ?: return
+            if (text.isBlank()) return
+            Prefs.setClips(this, Clips.serialize(Clips.add(Clips.parse(Prefs.clips(this)), text)))
+        } catch (e: Exception) {
+            // SecurityException on a phone that refuses the read, anything else from a hostile clip.
+            // Losing a clip is a missing row; throwing here would take the keyboard down with it.
+        }
+    }
+
+    /**
+     * Whether the copying app asked for this clip not to be logged.
+     *
+     * The constant is API 33 and the string key is what every version reads, so both are checked —
+     * on an older phone the extra is still present in the bundle, just unnamed by the SDK.
+     */
+    private fun isSensitive(description: ClipDescription): Boolean {
+        val extras = description.extras ?: return false
+        return extras.getBoolean("android.content.extra.IS_SENSITIVE", false) ||
+            extras.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE, false)
     }
 
     // Never take over the whole screen with the big white "extract" editor (it appears in landscape by
