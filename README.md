@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.3.x** (tag `v1.3.<n>`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v1.4.x** (tag `v1.4.<n>`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -74,6 +74,12 @@ Optional settings, all in the app itself:
   offers, so turning it down makes the keyboard quieter rather than less capable. **The delete key**
   chooses between *Show other words*, which walks every guess and ends at exactly what you typed, and
   *Undo the fix*, which puts your spelling back in one press and stops.
+- **How it reads a swipe** — **Model** (the default) or **Shape matching**. The model is a 635k-parameter
+  neural network bundled in the APK and run on the phone; the shape matcher compares your trace against
+  the path through each word's keys, which is what this keyboard did before and what most gesture
+  keyboards still do. On 517 real human swipes, with this app's own dictionary behind both: **74.7%**
+  right first time for the shape matcher, **92.5%** for the model. The shape matcher is always loaded
+  and answers whenever the model can't — see [Swipe typing](#swipe-typing) below.
 - **Swipe typing** (on by default) — drag from letter to letter to write a whole word, then lift.
   Guessed wrong? Delete walks the other words your trace could have meant. This works on the keypad
   too. The trail follows every touch position the screen reports, not one per frame, and
@@ -139,6 +145,66 @@ Optional settings, all in the app itself:
   keyboard enabled. Tap it to move to the next one.
 
 Layout and appearance changes take effect the next time the keyboard opens.
+
+## Swipe typing
+
+Two decoders ship, and the setting that picks between them is under **Swipe settings**.
+
+**The model** is [FUTO Swipe](https://huggingface.co/futo-org/futo-swipe)'s encoder
+([arXiv:2606.25247](https://arxiv.org/abs/2606.25247)): a 635k-parameter temporal convolutional
+network, 2.6 MB, a couple of milliseconds a swipe. It reads a traced path and says, at each of 32
+points along it, which letter it thinks was being aimed at. It is **layout-agnostic** — the key
+positions are an input rather than something it learned — so one file serves QWERTY, AZERTY, QWERTZ
+and all three height presets, with no per-layout table anywhere.
+
+Turning that into words is a trie-constrained CTC beam search
+([`NeuralDecoder`](app/src/main/java/app/lightphonekeyboard/text/NeuralDecoder.kt)), which is this
+repository's own code, written from Equations 2 and 3 of the paper. Nothing about it is guesswork:
+`app/src/test/resources/swipe_goldens.json` holds ten emission matrices recorded from the real model
+over real human swipes, and the tests pin the search's output to a reference implementation
+word for word.
+
+**The shape matcher** ([`GestureDecoder`](app/src/main/java/app/lightphonekeyboard/text/GestureDecoder.kt))
+is the SHARK² family: draw the ideal path through each candidate word's keys, and ask which one the
+trace most resembles, across a location channel, a shape channel and a length channel. It is still
+here and still loaded, because it is what answers on the first swipe after an install — the model is
+copied out of the APK before it can be loaded — and on any phone where the native library will not
+load at all. It also has settings the model does not: how far it reaches when nothing matches.
+
+### The numbers
+
+517 real human swipes from [FUTO's corpus](https://huggingface.co/datasets/futo-org/swipe.futo.org)
+(MIT), decoded against this app's own 63k dictionary, both decoders given the same traces in the same
+layout:
+
+| | Right first time | In the top four |
+| --- | --- | --- |
+| Shape matching | 74.7% | 90.7% |
+| Model | **92.5%** | **99.2%** |
+
+The second column is why the delete key walks the alternatives: the word you drew is nearly always
+reachable, so how many guesses it will offer (2 to 8, under Swipe settings) matters more than the
+first column does.
+
+### Modifying the model
+
+`assets/swipe/encoder.pte` is FUTO's published encoder with one change. Its third input is a boolean
+mask saying which of its 64 key slots hold real keys; that has been baked in as a constant of 26 true
+and 38 false. The keyboard's alphabet is never going to be anything else, and ExecuTorch's Java API
+cannot construct a boolean tensor at all, so a program that asks for one cannot be driven from
+Kotlin. The rewrite touches the program's value table only. No weight is changed, and the modified
+program's output was checked to be bit-identical to the original's.
+
+The model weights are FUTO's, under the
+[FUTO Model Weights License 1.0](https://huggingface.co/futo-org/futo-swipe/blob/main/LICENSE.md),
+which permits this use and requires the credit that appears under Swipe settings. The corpus the
+numbers above are measured on is MIT. Everything else here stays MIT, and none of it touches the
+network: the model runs on the phone, like the dictionary does.
+
+### What it costs
+
+About 6 MB of APK: 2.6 MB for the model and the rest for ExecuTorch's arm64 native library. Nothing
+is downloaded — the Light Phone III is arm64, and `abiFilters` keeps every other architecture out.
 
 ## Build it yourself
 
@@ -210,6 +276,35 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v1.4.x** (2026-09-17) — **Swipes are read by a neural model now. 74.7% right first time
+  became 92.5%.**
+
+  Swipe decoding has been a SHARK²-style shape matcher since v1.0: draw the ideal path through each
+  word's keys, and score the trace against every one of them. That is what most gesture keyboards
+  still do, and it is good at clean traces and bad at fast ones. It now sits behind
+  [FUTO Swipe](https://arxiv.org/abs/2606.25247)'s encoder, a 635k-parameter network that reads the
+  path directly. Measured on 517 real human swipes with this app's own dictionary behind both
+  decoders: 74.7% right first time before, 92.5% after, and 90.7% to 99.2% in the top four the delete
+  key walks.
+
+  The model is layout-agnostic, which is the reason it fits here at all: it takes the key positions
+  as an input, so the same 2.6 MB serves QWERTY, AZERTY, QWERTZ and every height preset, and the
+  keyboard needs no table per layout. Reading words out of what it emits is a trie-constrained beam
+  search written from the paper, and the tests pin it to a reference implementation on ten emission
+  matrices recorded from the real model.
+
+  The old decoder has not been removed and is not dead code. It answers on the first swipe after an
+  install, while the model is still being copied out of the APK, and on any phone where the native
+  library will not load — and **Shape matching** under Swipe settings switches back to it for good.
+
+  Traces now carry the time of every touch point. The model reads speed and acceleration out of the
+  spacing between points, and this keyboard's own spacing is not the hardware's: a batched move hands
+  over several positions at once, and points too close together are dropped. Without the times, a
+  pause and a sprint through the same letters arrive as the same stroke.
+
+  The APK grows about 6 MB, 2.6 MB of it the model. Nothing is downloaded and nothing leaves the
+  phone.
 
 - **v1.3.x** (2026-09-17) — **Renamed to Bright Keyboard. A tools page behind the emoji key, with
   a clipboard history and one-handed mode. A key that hides the keyboard.**

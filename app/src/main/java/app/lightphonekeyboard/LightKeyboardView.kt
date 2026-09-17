@@ -139,7 +139,7 @@ class LightKeyboardView @JvmOverloads constructor(
          * (x / key width, y / row pitch), matching the geometry reported by [onKeyGrid], so the host
          * can decode without knowing anything about pixels.
          */
-        fun onGesture(xs: FloatArray, ys: FloatArray, count: Int)
+        fun onGesture(xs: FloatArray, ys: FloatArray, times: LongArray, count: Int)
 
         /** The laid-out a-z key positions, in key units. Re-sent on every relayout. */
         fun onKeyGrid(grid: KeyGrid)
@@ -566,6 +566,16 @@ class LightKeyboardView @JvmOverloads constructor(
     // is far more shape than the 32-sample decoder can use.
     private val traceX = FloatArray(MAX_TRACE_POINTS)
     private val traceY = FloatArray(MAX_TRACE_POINTS)
+
+    /**
+     * When each traced point was reported, in [MotionEvent] time.
+     *
+     * Recorded because the swipe model reads speed and acceleration out of the spacing between
+     * points, and this buffer's spacing is not the hardware's: a batched MOVE hands over several
+     * positions with one call, and [addTracePoint] drops any point too close to the last. Without
+     * the times, a pause and a sprint through the same letters arrive as the same stroke.
+     */
+    private val traceT = LongArray(MAX_TRACE_POINTS)
     private var traceCount = 0
     private var tracing = false
     /** The drawn trail, in pixels. Denser than the decoder's samples — see [addTracePoint]. */
@@ -1582,7 +1592,7 @@ class LightKeyboardView @JvmOverloads constructor(
                             invalidate()
                             listener?.onDismiss()
                         } else {
-                            maybeStartTrace(x, y)
+                            maybeStartTrace(x, y, ev.eventTime)
                         }
                     }
                     if (tracing) {
@@ -1596,10 +1606,13 @@ class LightKeyboardView @JvmOverloads constructor(
                         val pi = ev.findPointerIndex(firstPointerId)
                         if (pi >= 0) {
                             for (k in 0 until h) {
-                                addTracePoint(ev.getHistoricalX(pi, k), ev.getHistoricalY(pi, k))
+                                addTracePoint(
+                                    ev.getHistoricalX(pi, k), ev.getHistoricalY(pi, k),
+                                    ev.getHistoricalEventTime(k),
+                                )
                             }
                         }
-                        addTracePoint(x, y)
+                        addTracePoint(x, y, ev.eventTime)
                     }
                 }
             }
@@ -1631,7 +1644,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 // The lift point is recorded before the trace is handed over: MOVE events stop arriving a
                 // frame before the finger leaves the glass, and on a two-key word the last key IS half
                 // the word — losing the end of the stroke there is losing the letter.
-                if (tracing) { addTracePoint(ev.x, ev.y); finishTrace() } else invalidate()
+                if (tracing) { addTracePoint(ev.x, ev.y, ev.eventTime); finishTrace() } else invalidate()
             }
 
             MotionEvent.ACTION_CANCEL -> {
@@ -1714,7 +1727,7 @@ class LightKeyboardView @JvmOverloads constructor(
      * The letter the starting key committed on touch-down is retracted here: it was the gesture's
      * first letter, and the decoded word will supply it.
      */
-    private fun maybeStartTrace(x: Float, y: Float) {
+    private fun maybeStartTrace(x: Float, y: Float, now: Long) {
         if (!swipeTyping || layer != Layer.LETTERS) return
         if (!keypadMode && letterKeys.isEmpty()) return
         if (pressed.size != 1) return
@@ -1738,8 +1751,8 @@ class LightKeyboardView @JvmOverloads constructor(
         trailCount = 0
         trailFadeFrom = 0L
         tracedDigits.setLength(0)
-        addTracePoint(downX, downY)
-        addTracePoint(x, y)
+        addTracePoint(downX, downY, downTime)
+        addTracePoint(x, y, now)
     }
 
     /** Keys a pad trace may pass through: the lettered ones. 0 is a space and 1 is punctuation. */
@@ -1758,7 +1771,7 @@ class LightKeyboardView @JvmOverloads constructor(
      * decoder can use, and a cluster of them where the finger slowed down would drag the decoder's
      * equal-spacing resample toward the pause and distort the stroke.
      */
-    private fun addTracePoint(x: Float, y: Float) {
+    private fun addTracePoint(x: Float, y: Float, time: Long) {
         // The trail is drawn from its own, denser buffer. The decoder's minimum step exists to stop a
         // cluster of samples dragging its equal-spacing resample toward wherever the finger paused —
         // a real requirement for decoding and exactly the wrong thing for drawing, where dropping
@@ -1784,6 +1797,7 @@ class LightKeyboardView @JvmOverloads constructor(
         }
         traceRawX[traceCount] = x
         traceRawY[traceCount] = y
+        traceT[traceCount] = time
         traceX[traceCount] = x / letterKeyW
         // Same upward parallax correction the tap model applies (fingers register low). One averaged
         // offset rather than the per-row values, since a trace crosses rows by definition.
@@ -1859,7 +1873,7 @@ class LightKeyboardView @JvmOverloads constructor(
             if (digits.length >= 2) listener?.onKeypadGesture(digits) else listener?.onKeypadTraceCancel()
             return
         }
-        if (n >= 2) listener?.onGesture(traceX, traceY, n)
+        if (n >= 2) listener?.onGesture(traceX, traceY, traceT, n)
     }
 
     private fun abandonTrace() {

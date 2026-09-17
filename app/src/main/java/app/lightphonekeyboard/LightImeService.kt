@@ -23,6 +23,7 @@ import app.lightphonekeyboard.text.ContextRanker
 import app.lightphonekeyboard.text.KeyGrid
 import app.lightphonekeyboard.text.Keypad
 import app.lightphonekeyboard.text.StripItem
+import app.lightphonekeyboard.text.SwipeTrace
 import app.lightphonekeyboard.text.Suggester
 import app.lightphonekeyboard.text.WordContext
 import java.util.Locale
@@ -1318,7 +1319,13 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     override fun onKeyGrid(grid: KeyGrid) {
         // The view has laid out; tell the corrector and the decoder where the letters actually are.
         engine.setKeyGrid(grid)
+        // The model wants the same geometry in its own frame. Computed here, once per relayout,
+        // rather than per swipe: it is the same answer until the keys move.
+        swipeFrame = SwipeTrace.frameOf(grid)
     }
+
+    /** The current layout in the swipe model's frame. Null until the view has laid out. */
+    private var swipeFrame: SwipeTrace.Frame? = null
 
     /**
      * A finished trace. Decode it, commit the best reading plus a trailing space, and remember the
@@ -1332,18 +1339,14 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      * already been retracted by the view, so a rejected gesture leaves the field exactly as it was —
      * the right outcome for a stray drag.
      */
-    override fun onGesture(xs: FloatArray, ys: FloatArray, count: Int) {
+    override fun onGesture(xs: FloatArray, ys: FloatArray, times: LongArray, count: Int) {
         // A search borrows the letter keys, so a trace across them is a word the user never meant to
         // commit — they think they are searching. Same reasoning for the keypad and the strip below.
         if (searchingEmoji) { endEmojiSearch(); return }
         val ic = currentInputConnection ?: return
         if (!Prefs.swipeTyping(this)) return
-        val decoder = engine.decoder ?: return          // dictionary still loading, or unavailable
-        val words = decoder.decode(
-            xs, ys, count, Prefs.swipeAlternates(this),
-            contextOf(textBeforeCursor(CONTEXT_LOOKBACK), ""),
-            Prefs.swipeReach(this),
-        )
+        val limit = Prefs.swipeAlternates(this)
+        val words = decodeGesture(xs, ys, times, count, limit)
         if (words.isEmpty()) return
         clearUndo()
         // Worked out before anything is committed: once the word is in the field the character before
@@ -1367,6 +1370,41 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             capitalized = altCapitalized,
         )
         refreshSuggestions()
+    }
+
+    /**
+     * Read a trace, with the neural decoder if it is available and the shape decoder if it is not.
+     *
+     * The fallback is not a nicety. The model is a native library and a 2.6 MB file that has to be
+     * copied out of the APK before it can be loaded; on the first swipe after an install neither is
+     * ready yet, and on a phone whose architecture the library does not cover neither ever will be.
+     * Both cases have to end in a keyboard that decodes swipes slightly worse, never in one that
+     * ignores them — see [SwipeEncoder].
+     *
+     * The neural path is also allowed to come back empty, which happens when a trace crosses nothing
+     * the dictionary can spell. That falls through too: the shape decoder has its own reach setting
+     * and will settle for the nearest word, which is what the user asked it to do.
+     */
+    private fun decodeGesture(
+        xs: FloatArray, ys: FloatArray, times: LongArray, count: Int, limit: Int,
+    ): List<String> {
+        if (Prefs.neuralSwipe(this)) {
+            val neural = engine.neural
+            val frame = swipeFrame
+            if (neural != null && frame != null) {
+                val emissions = engine.encoder.emissions(frame, xs, ys, times, count)
+                if (emissions != null) {
+                    val words = neural.decode(emissions, limit = limit)
+                    if (words.isNotEmpty()) return words
+                }
+            }
+        }
+        val decoder = engine.decoder ?: return emptyList()   // dictionary still loading
+        return decoder.decode(
+            xs, ys, count, limit,
+            contextOf(textBeforeCursor(CONTEXT_LOOKBACK), ""),
+            Prefs.swipeReach(this),
+        )
     }
 
     /**

@@ -46,6 +46,14 @@
     <string name="clip_empty">Nothing copied yet. What you copy in other apps shows up here.</string>
     <string name="clip_off">Clipboard history is off. Turn it on in Settings.</string>
 
+    <!-- Which engine reads a swipe. -->
+    <string name="swipe_engine_heading">HOW IT READS A SWIPE</string>
+    <string name="swipe_engine_model">Model</string>
+    <string name="swipe_engine_model_detail">A small neural network, bundled and run on the phone. Right first time about 93%% of the time, against 75%% for the older method, measured on the same real swipes.</string>
+    <string name="swipe_engine_shape">Shape matching</string>
+    <string name="swipe_engine_shape_detail">Compares your trace against the path through each word\'s keys. What this keyboard used before, and still what answers if the model can\'t load.</string>
+    <string name="swipe_engine_credit">Powered by FUTO Swipe technology.</string>
+
     <!-- One-handed, in settings. -->
     <string name="hand_title">One-handed</string>
     <string name="hand_off">Off</string>

@@ -9,10 +9,12 @@ import app.lightphonekeyboard.text.Dictionary
 import app.lightphonekeyboard.text.ForgottenWords
 import app.lightphonekeyboard.text.GestureDecoder
 import app.lightphonekeyboard.text.KeyGrid
+import app.lightphonekeyboard.text.NeuralDecoder
 import app.lightphonekeyboard.text.Phonetic
 import app.lightphonekeyboard.text.PhoneticRanker
 import app.lightphonekeyboard.text.Shortcuts
 import app.lightphonekeyboard.text.Suggester
+import app.lightphonekeyboard.text.SwipeLexicon
 import app.lightphonekeyboard.text.T9
 import app.lightphonekeyboard.text.UserWords
 import app.lightphonekeyboard.text.WordContext
@@ -49,6 +51,19 @@ class TextEngine(private val context: Context) {
     @Volatile
     var decoder: GestureDecoder? = null
         private set
+
+    /**
+     * The neural swipe decoder, and the model that feeds it.
+     *
+     * Published after [decoder] and independently of it, on the same principle as everything else
+     * here: the shape decoder is a working keyboard, so nothing waits on this. If the model or the
+     * trie never arrives, swipe typing is what it was before — see [SwipeEncoder].
+     */
+    @Volatile
+    var neural: NeuralDecoder? = null
+        private set
+
+    val encoder = SwipeEncoder(context)
 
     @Volatile
     var suggester: Suggester? = null
@@ -138,6 +153,16 @@ class TextEngine(private val context: Context) {
                 splitter = sp
                 shortcuts = Shortcuts.of(loaded, words)
                 dictionary = loaded
+
+                // The trie and the model, for neural swipe decoding. Built after the shape decoder
+                // is already usable, because it is the one that has to work.
+                try {
+                    val lex = SwipeLexicon.build(loaded, words)
+                    encoder.prepare()
+                    if (encoder.ready) neural = NeuralDecoder(lex)
+                } catch (e: Exception) {
+                    Log.w(TAG, "neural swipe decoding unavailable, using the shape decoder", e)
+                }
 
                 // The sound index is a pass over every word in the list, so it is built after the
                 // three above are already usable rather than in front of them. A keyboard that
@@ -275,6 +300,20 @@ class TextEngine(private val context: Context) {
         // this list and cannot be left stale. Someone who adds "Wont" as a surname has to stop
         // getting "won't" — see Shortcuts.of.
         dictionary?.let { shortcuts = Shortcuts.of(it, words) }
+        // The trie has no way to add one word — a name that is a prefix of nothing needs new nodes
+        // wherever it diverges — so it is rebuilt. Off the main thread: it is 150k nodes, and adding
+        // a word is a thing the user does from a settings screen, not mid-sentence.
+        val n = neural
+        val d = dictionary
+        if (n != null && d != null) {
+            Thread({
+                try {
+                    n.lexicon = SwipeLexicon.build(d, words)
+                } catch (e: Exception) {
+                    Log.w(TAG, "could not rebuild the swipe trie; it keeps the words it had", e)
+                }
+            }, "light-kb-trie").apply { priority = Thread.MIN_PRIORITY }.start()
+        }
     }
 
     /** The same for the forgotten list, which the strip's long-press and the settings screen both edit. */

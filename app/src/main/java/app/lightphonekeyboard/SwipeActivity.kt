@@ -25,6 +25,7 @@ class SwipeActivity : AppCompatActivity() {
 
     private val strengthChecks = ArrayList<Pair<Alternatives.Strength, TextView>>()
     private val countChecks = ArrayList<Pair<Int, TextView>>()
+    private val engineChecks = ArrayList<Pair<Boolean, TextView>>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,6 +51,19 @@ class SwipeActivity : AppCompatActivity() {
             },
         )
         root.addView(label(getString(R.string.swipe_title), 28f, R.color.white))
+
+        // The engine first, because the two settings under it only bite on the shape decoder.
+        root.addView(label(getString(R.string.swipe_engine_heading), 18f, R.color.gray))
+        engineChecks.add(true to option(root, pad, getString(R.string.swipe_engine_model),
+            getString(R.string.swipe_engine_model_detail)) {
+            Prefs.setNeuralSwipe(this, true); refreshChecks()
+        })
+        engineChecks.add(false to option(root, pad, getString(R.string.swipe_engine_shape),
+            getString(R.string.swipe_engine_shape_detail)) {
+            Prefs.setNeuralSwipe(this, false); refreshChecks()
+        })
+        // Required by the model's licence, and fair in any case: the model is not this app's work.
+        root.addView(label(getString(R.string.swipe_engine_credit), 13f, R.color.gray))
 
         root.addView(label(getString(R.string.swipe_reach_heading), 18f, R.color.gray))
         for (s in Alternatives.Strength.entries) {
@@ -149,6 +163,10 @@ class SwipeActivity : AppCompatActivity() {
         val n = Prefs.swipeAlternates(this)
         for ((key, view) in countChecks) {
             view.visibility = if (key == n) View.VISIBLE else View.INVISIBLE
+        }
+        val neural = Prefs.neuralSwipe(this)
+        for ((key, view) in engineChecks) {
+            view.visibility = if (key == neural) View.VISIBLE else View.INVISIBLE
         }
     }
 }
