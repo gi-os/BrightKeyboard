@@ -813,6 +813,10 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             val text = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString() ?: return
             if (text.isBlank()) return
             Prefs.setClips(this, Clips.serialize(Clips.add(Clips.parse(Prefs.clips(this)), text)))
+            // The clipboard page, if it is the one on screen, is now showing a list without this in
+            // it. Copying something in another app and coming straight back is the main reason to
+            // have a history at all, and that round trip never re-focuses the field.
+            keyboard?.clipsChanged()
         } catch (e: Exception) {
             // SecurityException on a phone that refuses the read, anything else from a hostile clip.
             // Losing a clip is a missing row; throwing here would take the keyboard down with it.
@@ -975,7 +979,15 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
 
     // Tell any of our own overlays (e.g. light-assistant's edge seam) to get out of the way while the
     // keyboard is on screen, so they don't sit over the top-left keys.
-    override fun onWindowShown() { super.onWindowShown(); broadcastImeVisible(true) }
+    override fun onWindowShown() {
+        super.onWindowShown()
+        // A height or a one-handed side can now be chosen from the keyboard's own tools page, which
+        // opens an Activity. That hides the keyboard without always ending the input session, so
+        // onStartInputView arrives with restarting = true and skips reset() — and the choice the
+        // user just made would not appear until they moved to another field.
+        keyboard?.refreshPrefs()
+        broadcastImeVisible(true)
+    }
     override fun onWindowHidden() { super.onWindowHidden(); broadcastImeVisible(false) }
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)

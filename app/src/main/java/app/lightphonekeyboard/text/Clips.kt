@@ -69,8 +69,6 @@ object Clips {
         return prune(listOf(Clip(trimmed, existing?.pinned ?: false)) + rest)
     }
 
-    fun remove(clips: List<Clip>, text: String): List<Clip> = clips.filter { it.text != text }
-
     /** Flip the pin on [text]. A newly pinned clip stays where it is; the list is ordered by recency. */
     fun togglePin(clips: List<Clip>, text: String): List<Clip> =
         prune(clips.map { if (it.text == text) it.copy(pinned = !it.pinned) else it })

@@ -26,6 +26,12 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Empty on purpose. The action's default is to install the legacy `tools` package, which
+          # Google withdrew from the SDK repository — sdkmanager answers "Failed to find package
+          # 'tools'" and exits 1, failing every Android build from 2026-09-14 on. Gradle resolves the
+          # platform and build-tools it needs by itself.
+          packages: ''
 
       # Debug only, and with no keystore in the job at all. The release build reads
       # signing-fingerprint.txt and the decoded keystore; neither is present here, and neither

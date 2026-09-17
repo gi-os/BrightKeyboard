@@ -455,7 +455,7 @@ class SetupActivity : AppCompatActivity() {
         correctionValue?.text = "$strength · $delete"
     }
 
-    /** Update the current-height name shown on the keyboard-height row. */
+    /** Update the current side shown on the one-handed row. */
     private fun refreshHand() {
         handValue?.text = when (Prefs.oneHanded(this)) {
             Prefs.HAND_LEFT -> getString(R.string.hand_left)
@@ -464,6 +464,7 @@ class SetupActivity : AppCompatActivity() {
         }
     }
 
+    /** Update the current-height name shown on the keyboard-height row. */
     private fun refreshHeight() {
         heightValue?.text = heightName(Prefs.keyHeight(this))
     }

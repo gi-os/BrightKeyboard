@@ -207,6 +207,16 @@ class LightKeyboardView @JvmOverloads constructor(
 
         // The clipboard page: three clips to a page, a pin beside each, and a pager below.
         const val CLIP_BACK = "__CLIP_BACK__"
+
+        /**
+         * A row of the clipboard page with no clip on it.
+         *
+         * It exists so that the page's hit rects tile without holes. [findKey] answers an uncovered
+         * point with the *nearest* key centre, which is what makes mis-taps between letters land on
+         * the letter you meant — but on a page whose cells paste text on touch-down, a hole below
+         * the last clip meant tapping empty space pasted the first one.
+         */
+        const val CLIP_BLANK = "__CLIP_BLANK__"
         const val CLIP_PREV = "__CLIP_PREV__"
         const val CLIP_NEXT = "__CLIP_NEXT__"
         const val CLIP_CLEAR = "__CLIP_CLEAR__"
@@ -848,21 +858,33 @@ class LightKeyboardView @JvmOverloads constructor(
         val first = clipPage * CLIP_ROWS
         for (r in 0 until CLIP_ROWS) {
             val i = first + r
-            if (i >= clips.size) break
-            val bandTop = top + padTop + r * rowPitch
-            val visTop = bandTop + keyGap
+            // Bands tile [top, gridBottom]: the first absorbs the top padding, the last reaches the
+            // controls, and a row with no clip on it is covered by a key that does nothing.
+            val bandTop = if (r == 0) top else top + padTop + r * rowPitch
+            val bandBottom = if (r == CLIP_ROWS - 1) gridBottom else top + padTop + (r + 1) * rowPitch
+            val visTop = top + padTop + r * rowPitch + keyGap
             val visBottom = visTop + rowKeyH
+            if (i >= clips.size) {
+                placed.add(
+                    PlacedKey(
+                        Key.CLIP_BLANK,
+                        RectF(contentLeft, bandTop, contentLeft + contentW, bandBottom),
+                        RectF(left, visTop, right, visBottom),
+                    ),
+                )
+                continue
+            }
             placed.add(
                 PlacedKey(
                     Key.clipCell(i),
-                    RectF(contentLeft, bandTop, right - pinW, bandTop + rowPitch),
+                    RectF(contentLeft, bandTop, right - pinW, bandBottom),
                     RectF(left, visTop, right - pinW - keyGap, visBottom),
                 ),
             )
             placed.add(
                 PlacedKey(
                     Key.clipPin(i),
-                    RectF(right - pinW, bandTop, contentLeft + contentW, bandTop + rowPitch),
+                    RectF(right - pinW, bandTop, contentLeft + contentW, bandBottom),
                     RectF(right - pinW + keyGap, visTop, right, visBottom),
                 ),
             )
@@ -927,9 +949,33 @@ class LightKeyboardView @JvmOverloads constructor(
      */
     private fun defaultHand(): String = Prefs.HAND_RIGHT
 
-    private fun writeClips(updated: List<Clips.Clip>) {
+    /**
+     * Apply [change] to the *stored* history and save the result.
+     *
+     * Re-read rather than edited in place. The IME service writes this same preference every time
+     * anything on the phone is copied, so the list this view snapshotted when the page opened can
+     * already be out of date — and serializing a whole list back over it would erase whatever was
+     * copied in between. Read, change, write, in one go on the main thread, which is the only thread
+     * either writer runs on.
+     */
+    private fun writeClips(change: (List<Clips.Clip>) -> List<Clips.Clip>) {
+        val updated = change(Clips.parse(Prefs.clips(context)))
         clips = updated
         Prefs.setClips(context, Clips.serialize(updated))
+        clipPage = clipPage.coerceIn(0, clipPages() - 1)
+        rebuild()
+    }
+
+    /**
+     * Something was copied while the keyboard was up. Show it.
+     *
+     * Only acts when the clipboard page is the one on screen: anywhere else the page will re-read
+     * the history when it opens, and rebuilding the letter keyboard because another app copied
+     * something would be work nobody asked for.
+     */
+    fun clipsChanged() {
+        if (layer != Layer.CLIPS) return
+        clips = Clips.parse(Prefs.clips(context))
         clipPage = clipPage.coerceIn(0, clipPages() - 1)
         rebuild()
     }
@@ -962,6 +1008,24 @@ class LightKeyboardView @JvmOverloads constructor(
         pressedEmojiCell = -1
         emojiPanel.search("")
         layer = Layer.LETTERS
+        rebuild()
+    }
+
+    /**
+     * Re-read the settings and lay the keyboard out again, without treating this as a new field.
+     *
+     * Called when the keyboard comes back on screen. A height or a one-handed side chosen from the
+     * tools page is picked in an Activity, which hides the keyboard and does not always end the
+     * input session — so `onStartInputView(restarting = true)` skips [reset], and without this the
+     * choice a user just made would not appear until they moved to another field.
+     */
+    fun refreshPrefs() {
+        applyPrefs()
+        // The tools and clipboard pages are ways through to something, not places to be left. Coming
+        // back to a keyboard still showing one — after hiding it, or after a settings screen it
+        // opened — means coming back to no keys. The symbols layer is deliberately not reset here:
+        // somebody who switched to it before the keyboard was hidden meant to be on it.
+        if (layer == Layer.TOOLS || layer == Layer.CLIPS) layer = Layer.LETTERS
         rebuild()
     }
 
@@ -1032,8 +1096,10 @@ class LightKeyboardView @JvmOverloads constructor(
         super.onDraw(canvas)
         if (listening) { drawListening(canvas); return }
         for (pk in placed) {
-            val down = pressed.containsValue(pk) ||
-                (pressedEmojiCell >= 0 && pk.id == Key.emojiCell(pressedEmojiCell))
+            val down = pk.id != Key.CLIP_BLANK && (
+                pressed.containsValue(pk) ||
+                    (pressedEmojiCell >= 0 && pk.id == Key.emojiCell(pressedEmojiCell))
+                )
             if (down) {
                 val r = dpf(8)
                 canvas.drawRoundRect(pk.vis, r, r, pressPaint)
@@ -1219,6 +1285,7 @@ class LightKeyboardView @JvmOverloads constructor(
             return
         }
         if (Key.isEmojiCat(id)) { drawEmojiCategory(canvas, pk); return }
+        if (id == Key.CLIP_BLANK) return
         if (Key.isClipCell(id)) { drawClip(canvas, pk); return }
         if (Key.isClipPin(id)) { drawClipPin(canvas, pk); return }
         val size = if (layer == Layer.EMOJI) emojiTextSize else if (id.length == 1) keyTextSize else labelTextSize
@@ -1368,7 +1435,7 @@ class LightKeyboardView @JvmOverloads constructor(
         Key.BACKSPACE, Key.EMOJI_BACK, Key.CLIP_BACK -> if (compact) dpf(7) else dpf(10)
         // The strip button is as tall as the whole keyboard; without a large inset its glyph would
         // be scaled to that height and fill the strip.
-        Key.HAND_RESET -> (minOf(rowKeyH, contentW * (1f - ONE_HANDED_FRACTION)) / 2f - dpf(11))
+        Key.HAND_RESET -> (minOf(rowKeyH, width * (1f - ONE_HANDED_FRACTION)) / 2f - dpf(11))
             .coerceAtLeast(dpf(2))
         Key.MIC, Key.GLOBE -> if (compact) dpf(6) else dpf(9)
         else -> if (compact) dpf(5) else dpf(7)
@@ -1463,7 +1530,12 @@ class LightKeyboardView @JvmOverloads constructor(
             MotionEvent.ACTION_POINTER_DOWN -> {
                 // Ignored mid-trace: a second finger landing while a word is being drawn is a palm or
                 // a stray thumb, and typing its letter would corrupt the word about to be committed.
-                if (!tracing) {
+                //
+                // Ignored on the tools and clipboard pages for a harder reason. Every key on those
+                // pages does something one-way and unretractable — opens a settings screen, hides the
+                // keyboard, pastes a clip — so a palm landing there is not a stray letter that can be
+                // deleted. The emoji layer already refuses second fingers for the same reason.
+                if (!tracing && layer != Layer.TOOLS && layer != Layer.CLIPS) {
                     val idx = ev.actionIndex
                     pressDown(ev.getPointerId(idx), ev.getX(idx), ev.getY(idx))
                 }
@@ -1502,7 +1574,7 @@ class LightKeyboardView @JvmOverloads constructor(
                         if (held && verticalDrag && (dy > dpf(30) || (vy > dpf(900) && dy > dpf(14)))) {
                             dismissedThisGesture = true
                             stopBackspaceRepeat()
-                            removeCallbacks(emojiKeyHold)
+                            removeCallbacks(toolsKeyHold)
                             // The first tap already committed a char on down; retract it so the swipe
                             // doesn't leave a stray letter behind.
                             if (firstKeyRetractable) listener?.onBackspace()
@@ -1536,7 +1608,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 val pid = ev.getPointerId(ev.actionIndex)
                 pressed.remove(pid)
                 if (pid == backspacePointerId) stopBackspaceRepeat()
-                removeCallbacks(emojiKeyHold)
+                removeCallbacks(toolsKeyHold)
                 invalidate()
             }
 
@@ -1545,7 +1617,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 pressedSuggestion = -1
                 pressed.clear()
                 stopBackspaceRepeat()
-                removeCallbacks(emojiKeyHold)
+                removeCallbacks(toolsKeyHold)
                 removeCallbacks(suggestionHold)
                 velocityTracker?.recycle()
                 velocityTracker = null
@@ -1567,7 +1639,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 suggestionForgotten = false
                 pressed.clear()
                 stopBackspaceRepeat()
-                removeCallbacks(emojiKeyHold)
+                removeCallbacks(toolsKeyHold)
                 removeCallbacks(suggestionHold)
                 velocityTracker?.recycle()
                 velocityTracker = null
@@ -1587,7 +1659,7 @@ class LightKeyboardView @JvmOverloads constructor(
         pressed[pointerId] = key
         invalidate()
         val retractable = onKey(key.id)
-        if (key.id == Key.EMOJI) armEmojiKeyHold()
+        if (key.id == Key.TOOLS) armToolsKeyHold()
         if (key.id == Key.BACKSPACE) {           // first delete fired on down; now arm the repeat
             backspacePointerId = pointerId
             backspaceDownMs = System.currentTimeMillis()
@@ -1598,19 +1670,23 @@ class LightKeyboardView @JvmOverloads constructor(
     }
 
     /**
-     * Held on the emoji key: hand over to another keyboard.
+     * Held on the tools key: hand over to another keyboard.
      *
-     * The panel has already opened by the time this fires, because keys in this view commit on
+     * The page has already opened by the time this fires, because keys in this view commit on
      * touch-down. That does not matter here and is why the hold is possible at all — switching
      * replaces this whole view, so whatever it was showing goes with it. The globe key does the same
      * job, but only appears when more than one keyboard is enabled and can be switched off, so this
      * is the route that is always there.
+     *
+     * On the tools key rather than the emoji key it replaced, and deliberately not on both: the
+     * emoji key sits on the pixels the tools key was on, so a slow second tap would otherwise hold a
+     * finger over the switcher when all it wanted was emoji.
      */
-    private val emojiKeyHold = Runnable { listener?.onSwitchInput() }
+    private val toolsKeyHold = Runnable { listener?.onSwitchInput() }
 
-    private fun armEmojiKeyHold() {
-        removeCallbacks(emojiKeyHold)
-        postDelayed(emojiKeyHold, SUGGESTION_HOLD_MS)
+    private fun armToolsKeyHold() {
+        removeCallbacks(toolsKeyHold)
+        postDelayed(toolsKeyHold, SUGGESTION_HOLD_MS)
     }
 
     private fun stopBackspaceRepeat() {
@@ -1923,6 +1999,10 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun relayoutEmoji() {
         placed.clear()
         letterKeys.clear()
+        // Re-placed here as well as in [relayout], because this path rebuilds [placed] from scratch.
+        // Leaving it out let one scroll silently delete the button — and since [findKey] falls back
+        // to the nearest centre, every tap in the freed strip then hit an emoji instead.
+        if (narrowed) layoutHandReset()
         layoutEmoji()
         invalidate()
     }
@@ -1963,10 +2043,15 @@ class LightKeyboardView @JvmOverloads constructor(
         return if (slot in 0 until n) slot else -1
     }
 
-    /** Where the variant row is drawn. One row tall, centred in the grid, full width. */
+    /**
+     * Where the variant row is drawn. One row tall, centred in the grid, the full width of the
+     * content band — which is not the full width of the view once the keyboard has been narrowed.
+     * [variantSlotAt] divides this rect by the glyph count, so a rect wider than the grid would put
+     * a different glyph under the finger than the one under it on screen.
+     */
     private fun variantRowRect(): RectF {
         val top = stripTop + padTop + rowPitch
-        return RectF(0f, top, width.toFloat(), top + rowPitch)
+        return RectF(contentLeft, top, contentLeft + contentW, top + rowPitch)
     }
 
     private fun commitEmoji(glyph: String) {
@@ -2169,7 +2254,8 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.CLIP_BACK -> { layer = Layer.LETTERS; rebuild() }
             Key.CLIP_PREV -> { if (clipPage > 0) { clipPage--; rebuild() } }
             Key.CLIP_NEXT -> { if (clipPage < clipPages() - 1) { clipPage++; rebuild() } }
-            Key.CLIP_CLEAR -> writeClips(Clips.clearUnpinned(clips))
+            Key.CLIP_CLEAR -> writeClips { Clips.clearUnpinned(it) }
+            Key.CLIP_BLANK -> { }
             Key.EMOJI_SEARCH -> listener?.onEmojiSearch()
             Key.SYMBOLS -> { layer = Layer.SYMBOLS; rebuild() }
             Key.MORE -> { layer = Layer.MORE; rebuild() }
@@ -2197,7 +2283,9 @@ class LightKeyboardView @JvmOverloads constructor(
                     return false
                 }
                 if (Key.isClipPin(id)) {
-                    clips.getOrNull(Key.clipPinIndex(id))?.let { writeClips(Clips.togglePin(clips, it.text)) }
+                    clips.getOrNull(Key.clipPinIndex(id))?.let { clip ->
+                        writeClips { Clips.togglePin(it, clip.text) }
+                    }
                     return false
                 }
                 if (Key.isPad(id)) {
