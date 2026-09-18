@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.9.x** (tag `v1.9.<n>`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v3.0.x** (tag `v3.0.<n>`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -292,6 +292,15 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v3.0.x** (2026-09-18) — **Three-point-oh.**
+
+  A version number, not a rewrite. The 1.x line was a faithful clone of the Light Phone's own
+  keyboard with autocorrect bolted underneath; what it is now — a neural swipe decoder, a tools page,
+  a clipboard, one-handed mode, a full-screen GIF picker — is a different thing wearing the same
+  face, and the number had stopped saying so.
+
+  The package name is unchanged, so this installs over any earlier copy as an ordinary update.
 
 - **v1.9.x** (2026-09-18) — **The keyboard presses paste for you.**
 
