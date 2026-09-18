@@ -193,8 +193,13 @@ third of a key and no further. Past that the keyboard would be guessing at your 
 correcting for how a fingertip is sensed, which is the only job it has.
 
 The model is 26 numbers a side. It lives in this app's own settings, goes nowhere else, and is sent
-nowhere at all. Key units rather than pixels, so changing the keyboard height keeps it. **Reset touch
-model**, under Autocorrect settings, puts it back to the starting point.
+nowhere at all. Key units rather than pixels, so changing the keyboard height keeps it.
+
+**Touch**, in settings, draws the whole thing. Each key shows where its target sits, the part of it
+no spelling model may overrule, how loosely you hit it against your own average, and how many taps
+that rests on. Four toggles turn those layers on and off. Type in the field on that page and the
+picture moves under your thumb, because it is the keyboard's own live model and not a copy of it.
+The same page holds **Reset touch model**, which puts everything back to the starting point.
 
 Whether it helps you is not something a benchmark can promise. A simulated typist who lands two
 thirds of a row low reads at 88.6% with it and 69.4% without, and an accurate typist is left alone.
@@ -331,6 +336,32 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v3.2.x** (2026-09-18) — **Look at what it learned.**
+
+  A **Touch** page in settings that draws the model: every key's target, its anchored core, its
+  spread, and the taps each one rests on, as four layers you can switch off one at a time. There is
+  a field on the page, and typing in it moves the picture, because the page borrows the keyboard's
+  live model rather than reading a saved copy. **Reset touch model** moved here from the autocorrect
+  page, where it sat next to nothing that explained it.
+
+  This exists because of what v3.1 is. A keyboard that adapts silently, keeps what it learns for
+  good, and never moves a key on screen is the right design and an unaccountable one: there is
+  nothing to look at, and no way to tell a keyboard that has learned your hand from one that has
+  quietly gone wrong.
+
+  **Also fixes v3.1, which learned nothing.** The check that spotted a reset from settings read an
+  absent setting as "somebody cleared it", when on a fresh install it only ever meant "nothing
+  written yet" — and the same branch disarmed saving, so the setting stayed absent and the check
+  fired again on the next field, for ever. Every new install lost its model at the end of the first
+  field it typed in. The rule is now four lines in `ModelStore` with the sequence written out as
+  tests, which is where it should have been: it cannot be exercised on a phone without deliberately
+  breaking one.
+
+  Two smaller ones found with it. The map drew the bottom row a third too wide, because shift and
+  backspace share that row with the letters and hold a cell each. And the summary counted the
+  population starting point as if it were something learned, so a keyboard that had measured nothing
+  still reported having moved.
 
 - **v3.1.x** (2026-09-18) — **The keys learn where your fingers go.**
 
