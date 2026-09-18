@@ -122,7 +122,7 @@ class KlipyApi(private val key: String) {
                 ?.bufferedReader()
                 ?.use { it.readText() }
                 .orEmpty()
-            if (code !in 200..299) throw ApiException(code, reasonFor(code))
+            if (code !in 200..299) throw ApiException(code, reasonFor(code, body))
             return runCatching { JSONObject(body) }.getOrNull()
                 ?: throw IOException("The GIF service answered with something that isn't JSON")
         } finally {
@@ -130,18 +130,42 @@ class KlipyApi(private val key: String) {
         }
     }
 
-    /** An error worth putting on a 360px screen. The code alone is not one. */
-    private fun reasonFor(code: Int): String = when (code) {
-        401, 403 -> "The GIF service refused that key"
-        404 -> "That GIF service has no search endpoint"
-        // The shipped key's allowance is shared by every install, so this is a normal thing to
-        // meet rather than an error — and it names the way out, since the way out is a setting.
-        429 -> "GIF search is busy — try shortly, or add your own key in Settings"
-        in 500..599 -> "The GIF service is having trouble"
-        else -> "The GIF service said $code"
-    }
+    private fun reasonFor(code: Int, body: String): String = Companion.reasonFor(code, body)
 
     companion object {
+
+        /**
+         * An error worth putting on a 360px screen. The code alone is not one, and for 403 the code
+         * is actively misleading.
+         *
+         * KLIPY sits behind Cloudflare, which answers **403 with its own page** when it does not
+         * like the client — "Error 1010: Access denied … based on your browser's signature". That is
+         * the same status the API uses for a key it will not accept, so reading the status alone
+         * tells somebody with a perfectly good key to go and replace it. Observed: a request from a
+         * datacentre IP gets 1010 for a real key, a made-up key and no key at all, identically.
+         *
+         * So the body is read, and only for that one distinction. Everything else here is the
+         * status, because everything else is unambiguous.
+         */
+        fun reasonFor(code: Int, body: String = ""): String = when {
+            code == 403 && blockedByEdge(body) ->
+                "The GIF service is blocking this connection, not the key"
+            code == 401 || code == 403 -> "The GIF service refused that key"
+            code == 404 -> "That GIF service has no search endpoint"
+            // The shipped key's allowance is shared by every install, so this is a normal thing to
+            // meet rather than an error — and it names the way out, since the way out is a setting.
+            code == 429 -> "GIF search is busy — try shortly, or add your own key in Settings"
+            code in 500..599 -> "The GIF service is having trouble"
+            else -> "The GIF service said $code"
+        }
+
+        /** Cloudflare's own refusal rather than the API's. Matched on its wording, not on a status. */
+        private fun blockedByEdge(body: String): Boolean {
+            if (body.isBlank()) return false
+            val lower = body.lowercase()
+            return "cloudflare" in lower || "error 1010" in lower || "attention required" in lower
+        }
+
         private const val BASE = "https://api.klipy.com/api/v1"
 
         /** Where to get a key. Shown in Settings, so it lives beside the endpoint it belongs to. */
