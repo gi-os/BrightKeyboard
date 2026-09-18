@@ -34,6 +34,9 @@ object Prefs {
     private const val KEY_CLIPBOARD = "clipboard_enabled"
     private const val KEY_CLIPS = "clipboard_clips"
     private const val KEY_NEURAL_SWIPE = "neural_swipe"
+    private const val KEY_KLIPY_KEY = "klipy_key"
+    private const val KEY_GIF_CUSTOMER = "gif_customer_id"
+    private const val KEY_RECENT_GIFS = "recent_gifs"
 
     /** Which edge the keys crowd onto when the board is narrowed; the stored value of [oneHanded]. */
     const val HAND_OFF = "off"
@@ -352,6 +355,40 @@ object Prefs {
 
     fun setNeuralSwipe(c: Context, value: Boolean) =
         prefs(c).edit().putBoolean(KEY_NEURAL_SWIPE, value).apply()
+
+    /**
+     * The user's own KLIPY key, which takes precedence over the one built into the APK.
+     *
+     * The built-in key's allowance is per *key*, not per install — every phone running this app
+     * draws on the same one — so it is a starter rather than a guarantee. When it is spent the
+     * service answers 429, the picker says so, and anyone who wants their own ceiling puts a key
+     * here. Nothing else in the keyboard depends on it.
+     */
+    fun klipyKey(c: Context): String = prefs(c).getString(KEY_KLIPY_KEY, "").orEmpty().trim()
+
+    fun setKlipyKey(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_KLIPY_KEY, value.trim()).apply()
+
+    /**
+     * A random id KLIPY wants so its own recents and ad fill work.
+     *
+     * Generated on first use and **never derived from anything about the phone or the person** — no
+     * install id, no hardware id, nothing hashed. The keyboard keeps its own recents locally, so
+     * this exists to satisfy the API rather than to be useful here, and a plain random UUID is the
+     * least it can be.
+     */
+    fun gifCustomerId(c: Context): String {
+        prefs(c).getString(KEY_GIF_CUSTOMER, null)?.takeIf { it.isNotBlank() }?.let { return it }
+        val fresh = java.util.UUID.randomUUID().toString()
+        prefs(c).edit().putString(KEY_GIF_CUSTOMER, fresh).apply()
+        return fresh
+    }
+
+    /** GIFs used lately, most recent first, as JSON. See [app.lightphonekeyboard.text.GifJson]. */
+    fun recentGifs(c: Context): String? = prefs(c).getString(KEY_RECENT_GIFS, null)
+
+    fun setRecentGifs(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_RECENT_GIFS, value).apply()
 
     /** Voice dictation (mic key + offline STT). Off by default; turning it on downloads the model. */
     fun voiceEnabled(c: Context): Boolean = prefs(c).getBoolean(KEY_VOICE, false)

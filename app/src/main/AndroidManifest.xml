@@ -69,6 +69,24 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
+        <!-- Hands a picked GIF to the app being typed into. Not exported: the only thing that
+             ever reads from it is whoever receives an InputConnection commitContent grant. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.gifs"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/gif_paths" />
+        </provider>
+
+        <!-- GIFs: the key the picker searches with, and the note about the network. -->
+        <activity
+            android:name=".GifsActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
         <!-- One-handed: off, or crowded against the left or right edge. -->
         <activity
             android:name=".OneHandedActivity"

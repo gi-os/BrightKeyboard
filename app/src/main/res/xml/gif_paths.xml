@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The one directory GifInsert writes into. Scoped to it rather than to the whole cache, so a
+     grant handed to another app reaches the GIF it was given and nothing else. -->
+<paths>
+    <cache-path name="gifs" path="gifs/" />
+</paths>

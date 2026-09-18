@@ -128,9 +128,14 @@ class LightKeyboardView @JvmOverloads constructor(
          */
         fun onPaste(text: String)
 
-        /** A tools tile that opens a settings screen. The IME owns starting activities. */
-        fun onOpenSettings()
-        fun onOpenHeight()
+        /**
+         * A GIF was picked. The host downloads it and hands it to the field — see [GifInsert],
+         * which is also where the case of a field that will not take one is handled.
+         */
+        fun onGif(url: String, label: String)
+
+        /** The search key on the GIF page: the letters come back and the strip shows the query. */
+        fun onGifSearch()
         /** Listening surface tapped — cancel dictation. */
         fun onMicCancel()
 
@@ -193,14 +198,19 @@ class LightKeyboardView @JvmOverloads constructor(
         /** Close the keyboard without leaving the field. Off by default; see [Prefs.hideKey]. */
         const val HIDE = "__HIDE__"
 
-        // The tools page. Tiles carry a word rather than an icon: there are five of them, they are
-        // reached deliberately rather than in the middle of typing, and a page of unlabelled glyphs
-        // is a page nobody reads twice.
+        // The tools page. Tiles carry a word rather than an icon: they are reached deliberately
+        // rather than in the middle of typing, and a page of unlabelled glyphs is a page nobody
+        // reads twice.
+        //
+        // Five things that cannot be done from a key, and nothing else. Height and Settings were
+        // here and are not any more: both open an Activity, which means leaving the field you are
+        // typing in, and both already sit in the app's own settings where somebody looking for
+        // them would look. A page of shortcuts to somewhere else is not a toolbox.
         const val TOOL_CLIPS = "__TOOL_CLIPS__"
-        const val TOOL_SYMBOLS = "__TOOL_SYMBOLS__"
+        const val TOOL_EMOJI = "__TOOL_EMOJI__"
+        const val TOOL_GIFS = "__TOOL_GIFS__"
         const val TOOL_HAND = "__TOOL_HAND__"
-        const val TOOL_HEIGHT = "__TOOL_HEIGHT__"
-        const val TOOL_SETTINGS = "__TOOL_SETTINGS__"
+        const val TOOL_HIDE = "__TOOL_HIDE__"
 
         /** Puts a one-handed keyboard back to full width. Lives in the strip the narrowing freed. */
         const val HAND_RESET = "__HAND_RESET__"
@@ -220,13 +230,23 @@ class LightKeyboardView @JvmOverloads constructor(
         const val CLIP_PREV = "__CLIP_PREV__"
         const val CLIP_NEXT = "__CLIP_NEXT__"
         const val CLIP_CLEAR = "__CLIP_CLEAR__"
+        // The GIF page: a grid of previews, a pager below, and a search that borrows the letters.
+        const val GIF_BACK = "__GIF_BACK__"
+        const val GIF_SEARCH = "__GIF_SEARCH__"
+        const val GIF_PREV = "__GIF_PREV__"
+        const val GIF_NEXT = "__GIF_NEXT__"
+        const val GIF_CELL_PREFIX = "__GIF_AT_"
+        fun gifCell(i: Int) = "$GIF_CELL_PREFIX${i}__"
+        fun isGifCell(id: String) = id.startsWith(GIF_CELL_PREFIX)
+        fun gifCellIndex(id: String) = if (isGifCell(id)) suffixIndex(id, GIF_CELL_PREFIX) else -1
+
         const val CLIP_CELL_PREFIX = "__CLIP_AT_"
         const val CLIP_PIN_PREFIX = "__CLIP_PIN_"
         fun clipCell(i: Int) = "$CLIP_CELL_PREFIX${i}__"
         fun clipPin(i: Int) = "$CLIP_PIN_PREFIX${i}__"
         fun isClipCell(id: String) = id.startsWith(CLIP_CELL_PREFIX)
         fun isClipPin(id: String) = id.startsWith(CLIP_PIN_PREFIX)
-        private fun suffixIndex(id: String, prefix: String): Int =
+        fun suffixIndex(id: String, prefix: String): Int =
             id.substring(prefix.length, id.length - 2).toIntOrNull() ?: -1
         fun clipCellIndex(id: String) = if (isClipCell(id)) suffixIndex(id, CLIP_CELL_PREFIX) else -1
         fun clipPinIndex(id: String) = if (isClipPin(id)) suffixIndex(id, CLIP_PIN_PREFIX) else -1
@@ -307,20 +327,20 @@ class LightKeyboardView @JvmOverloads constructor(
         /**
          * The tools page, reached from the bottom row's [Key.TOOLS].
          *
-         * Its last row is deliberately the *same shape* as the letter layers' bottom row — same keys,
-         * same weights, same order — so that [Key.EMOJI] lands on exactly the pixels [Key.TOOLS] was
-         * on. Emoji is the thing people come here for most, and the second tap lands where the first
-         * one did, which makes it one movement rather than two.
+         * Five tiles over the usual bottom row. Emoji is first among equals — it is what most
+         * people come here for — and is a tile rather than a key in the row below because a tile is
+         * a target you can hit without looking, and because the row below already has seven things
+         * in it.
          */
         val tools = listOf(
-            listOf(Key.TOOL_CLIPS),
-            listOf(Key.TOOL_SYMBOLS, Key.TOOL_HAND),
-            listOf(Key.TOOL_HEIGHT, Key.TOOL_SETTINGS),
-            listOf(Key.LETTERS, Key.GLOBE, Key.EMOJI, Key.SPACE, Key.MIC, Key.HIDE, Key.ENTER),
+            listOf(Key.TOOL_CLIPS, Key.TOOL_EMOJI),
+            listOf(Key.TOOL_GIFS, Key.TOOL_HAND),
+            listOf(Key.TOOL_HIDE),
+            listOf(Key.LETTERS, Key.GLOBE, Key.SPACE, Key.MIC, Key.HIDE, Key.ENTER),
         )
     }
 
-    private enum class Layer { LETTERS, SYMBOLS, MORE, EMOJI, TOOLS, CLIPS }
+    private enum class Layer { LETTERS, SYMBOLS, MORE, EMOJI, TOOLS, CLIPS, GIFS }
 
     private var layer = Layer.LETTERS
     private var shifted = true
@@ -619,7 +639,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 Layer.SYMBOLS -> Layout.symbols
                 Layer.MORE -> Layout.more
                 Layer.TOOLS -> Layout.tools
-                Layer.EMOJI, Layer.CLIPS -> emptyList()
+                Layer.EMOJI, Layer.CLIPS, Layer.GIFS -> emptyList()
             }
             // Drop any control keys turned off in settings (mic / emoji / return); the row reflows.
             return if (hiddenKeys.isEmpty()) rows else rows.map { row -> row.filter { it !in hiddenKeys } }
@@ -635,6 +655,7 @@ class LightKeyboardView @JvmOverloads constructor(
             listening -> Layout.letters.size           // keep height constant while listening
             layer == Layer.EMOJI -> emojiRowCount + 1
             layer == Layer.CLIPS -> CLIP_ROWS + 1
+            layer == Layer.GIFS -> GIF_ROWS + 1
             else -> currentRows.size
         }
         val h = stripTop + padTop + rowCount * rowPitch + padBottom
@@ -664,6 +685,7 @@ class LightKeyboardView @JvmOverloads constructor(
         if (narrowed) layoutHandReset()
         if (layer == Layer.EMOJI) { layoutEmoji(); return }
         if (layer == Layer.CLIPS) { layoutClips(); return }
+        if (layer == Layer.GIFS) { layoutGifs(); return }
 
         val h = height.toFloat()
         val rows = currentRows
@@ -922,6 +944,102 @@ class LightKeyboardView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * The GIF page: a grid of previews over one row of controls.
+     *
+     * Paged rather than scrolled, for the reason the clipboard is — see [layoutClips]. Three
+     * columns rather than two, because a cell one row-pitch tall and half a screen wide is a
+     * letterbox: at three across the cells are close to square and a centre-cropped preview of any
+     * shape fills one.
+     */
+    private fun layoutGifs() {
+        val top = stripTop
+        val gridBottom = top + padTop + GIF_ROWS * rowPitch
+        val w = contentLeft + contentW
+        val drawW = contentW - padSide * 2
+        val shown = gifPanel.results
+        val first = gifPage * GIF_ROWS * GIF_COLS
+        for (r in 0 until GIF_ROWS) {
+            val bandTop = if (r == 0) top else top + padTop + r * rowPitch
+            val bandBottom = if (r == GIF_ROWS - 1) gridBottom else top + padTop + (r + 1) * rowPitch
+            val visTop = top + padTop + r * rowPitch + keyGap
+            val visBottom = visTop + rowKeyH
+            for (c in 0 until GIF_COLS) {
+                val i = first + r * GIF_COLS + c
+                val cellLeft = contentLeft + padSide + drawW * (c.toFloat() / GIF_COLS)
+                val cellRight = contentLeft + padSide + drawW * ((c + 1).toFloat() / GIF_COLS)
+                val hitLeft = if (c == 0) contentLeft else cellLeft
+                val hitRight = if (c == GIF_COLS - 1) w else cellRight
+                // A cell with nothing in it is still placed. [findKey] answers an uncovered point
+                // with the nearest key centre, so a hole in a short last page would insert the
+                // neighbouring GIF instead of doing nothing.
+                placed.add(
+                    PlacedKey(
+                        if (i < shown.size) Key.gifCell(i) else Key.CLIP_BLANK,
+                        RectF(hitLeft, bandTop, hitRight, bandBottom),
+                        RectF(cellLeft + keyGap, visTop, cellRight - keyGap, visBottom),
+                    ),
+                )
+            }
+        }
+        layoutGifControls(gridBottom)
+    }
+
+    private fun layoutGifControls(gridBottom: Float) {
+        val h = height.toFloat()
+        val visTop = gridBottom + keyGap
+        val visBottom = visTop + rowKeyH
+        val drawW = contentW - padSide * 2
+        val ids = listOf(Key.GIF_BACK, Key.GIF_PREV, Key.GIF_NEXT, Key.GIF_SEARCH)
+        val weights = listOf(1.5f, 1f, 1f, 1.5f)
+        val total = weights.sum()
+        var x = contentLeft + padSide
+        for (k in ids.indices) {
+            val cw = drawW * (weights[k] / total)
+            val hitLeft = if (k == 0) contentLeft else x
+            val hitRight = if (k == ids.size - 1) contentLeft + contentW else x + cw
+            placed.add(
+                PlacedKey(ids[k], RectF(hitLeft, gridBottom, hitRight, h), RectF(x, visTop, x + cw, visBottom)),
+            )
+            x += cw
+        }
+    }
+
+    /** The GIF library and the thumbnails it has decoded. See [GifPanel]. */
+    val gifPanel = GifPanel(context).apply {
+        onChanged = {
+            // Results and thumbnails both land off the network thread; this is what puts them on
+            // screen. A full rebuild rather than an invalidate, because the number of cells with
+            // something in them has usually changed.
+            if (layer == Layer.GIFS) rebuild()
+        }
+    }
+
+    private var gifPage = 0
+
+    private fun openGifs() {
+        listener?.onEmojiPanelClosed()
+        variantGlyphs = emptyList()
+        clearEmojiGesture()
+        gifPage = 0
+        layer = Layer.GIFS
+        gifPanel.open()
+        rebuild()
+    }
+
+    private fun gifPages(): Int {
+        val perPage = GIF_ROWS * GIF_COLS
+        return ((gifPanel.results.size + perPage - 1) / perPage).coerceAtLeast(1)
+    }
+
+    /** Put the panel back showing [query]'s results. The search flow calls this, like the emoji one. */
+    fun showGifSearch(query: String) {
+        gifPage = 0
+        layer = Layer.GIFS
+        gifPanel.search(query)
+        rebuild()
+    }
+
     /** Open the tools page. Reads nothing: everything on it was cached by [applyPrefs]. */
     private fun openTools() {
         listener?.onEmojiPanelClosed()
@@ -1119,6 +1237,7 @@ class LightKeyboardView @JvmOverloads constructor(
         if (layer == Layer.EMOJI && variantGlyphs.isNotEmpty()) drawVariantRow(canvas)
         if (layer == Layer.EMOJI && emojiGlyphs.isEmpty()) drawEmojiEmpty(canvas)
         if (layer == Layer.CLIPS && clips.isEmpty()) drawClipsEmpty(canvas)
+        if (layer == Layer.GIFS && gifPanel.results.isEmpty()) drawGifsEmpty(canvas)
         if (stripH > 0f) drawStrip(canvas)
         if (tracing || trailFadeFrom != 0L) drawTrail(canvas)
     }
@@ -1296,12 +1415,60 @@ class LightKeyboardView @JvmOverloads constructor(
         }
         if (Key.isEmojiCat(id)) { drawEmojiCategory(canvas, pk); return }
         if (id == Key.CLIP_BLANK) return
+        if (Key.isGifCell(id)) { drawGif(canvas, pk); return }
         if (Key.isClipCell(id)) { drawClip(canvas, pk); return }
         if (Key.isClipPin(id)) { drawClipPin(canvas, pk); return }
         val size = if (layer == Layer.EMOJI) emojiTextSize else if (id.length == 1) keyTextSize else labelTextSize
         textPaint.textSize = size
         val baseline = pk.vis.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f
         canvas.drawText(labelFor(id), pk.vis.centerX(), baseline, textPaint)
+    }
+
+    /**
+     * One GIF cell: the preview's first frame, centre-cropped to fill.
+     *
+     * Centre-cropped rather than letterboxed. A GIF may be any shape, and fitting one inside a cell
+     * leaves black bars that read as part of the image on a black keyboard — the cells stop looking
+     * like a grid. Cropping loses the edges of a wide one, which for choosing between six of them
+     * is the better trade.
+     */
+    private fun drawGif(canvas: Canvas, pk: PlacedKey) {
+        val gif = gifPanel.results.getOrNull(Key.gifCellIndex(pk.id)) ?: return
+        val bitmap = gifPanel.thumbnail(gif.previewUrl)
+        if (bitmap == null) {
+            // Not here yet. A hairline box says "something is coming" without the flicker of a
+            // spinner on a cell this small; the repaint when it lands replaces it.
+            canvas.drawRect(pk.vis, dividerPaint)
+            return
+        }
+        val scale = maxOf(pk.vis.width() / bitmap.width, pk.vis.height() / bitmap.height)
+        val w = bitmap.width * scale
+        val h = bitmap.height * scale
+        val left = pk.vis.centerX() - w / 2f
+        val top = pk.vis.centerY() - h / 2f
+        canvas.save()
+        canvas.clipRect(pk.vis)
+        canvas.drawBitmap(bitmap, null, RectF(left, top, left + w, top + h), null)
+        canvas.restore()
+    }
+
+    /**
+     * What the GIF page says when it has no grid to show. Every one of these is a normal state
+     * rather than an error, and each names what to do next — a blank panel reads as broken.
+     */
+    private fun drawGifsEmpty(canvas: Canvas) {
+        val message = when (gifPanel.state) {
+            GifPanel.State.LOADING -> context.getString(R.string.gif_loading)
+            GifPanel.State.EMPTY -> context.getString(R.string.gif_none)
+            GifPanel.State.NO_KEY -> context.getString(R.string.gif_no_key)
+            GifPanel.State.FAILED -> gifPanel.message ?: context.getString(R.string.gif_failed)
+            else -> return
+        }
+        textPaint.textSize = labelTextSize
+        drawWrappedCentered(
+            canvas, message, contentLeft + contentW / 2f,
+            stripTop + padTop + rowPitch * GIF_ROWS / 2f, contentW - dpf(48), textPaint,
+        )
     }
 
     /**
@@ -1426,7 +1593,10 @@ class LightKeyboardView @JvmOverloads constructor(
         Key.TOOLS -> R.drawable.ic_kb_tools
         Key.HIDE -> R.drawable.ic_kb_hide
         Key.HAND_RESET -> R.drawable.ic_kb_expand
-        Key.CLIP_BACK -> R.drawable.ic_kb_chevron_down
+        Key.CLIP_BACK, Key.GIF_BACK -> R.drawable.ic_kb_chevron_down
+        Key.GIF_SEARCH -> R.drawable.ic_kb_search
+        Key.GIF_PREV -> R.drawable.ic_kb_chevron_left
+        Key.GIF_NEXT -> R.drawable.ic_kb_chevron_right
         Key.CLIP_PREV -> R.drawable.ic_kb_chevron_left
         Key.CLIP_NEXT -> R.drawable.ic_kb_chevron_right
         Key.BACKSPACE -> R.drawable.ic_kb_backspace
@@ -1442,7 +1612,7 @@ class LightKeyboardView @JvmOverloads constructor(
     // Icon inset inside its key. Compact keys are shorter, so the insets shrink too or the glyphs vanish.
     private fun padFor(id: String): Float = when (id) {
         Key.SHIFT -> if (compact) dpf(6) else dpf(9)
-        Key.BACKSPACE, Key.EMOJI_BACK, Key.CLIP_BACK -> if (compact) dpf(7) else dpf(10)
+        Key.BACKSPACE, Key.EMOJI_BACK, Key.CLIP_BACK, Key.GIF_BACK -> if (compact) dpf(7) else dpf(10)
         // The strip button is as tall as the whole keyboard; without a large inset its glyph would
         // be scaled to that height and fill the strip.
         Key.HAND_RESET -> (minOf(rowKeyH, width * (1f - ONE_HANDED_FRACTION)) / 2f - dpf(11))
@@ -1453,9 +1623,9 @@ class LightKeyboardView @JvmOverloads constructor(
 
     private fun labelFor(id: String): String = when (id) {
         Key.TOOL_CLIPS -> context.getString(R.string.tool_clipboard)
-        Key.TOOL_SYMBOLS -> context.getString(R.string.tool_symbols)
-        Key.TOOL_HEIGHT -> context.getString(R.string.tool_height)
-        Key.TOOL_SETTINGS -> context.getString(R.string.tool_settings)
+        Key.TOOL_EMOJI -> context.getString(R.string.tool_emoji)
+        Key.TOOL_GIFS -> context.getString(R.string.tool_gifs)
+        Key.TOOL_HIDE -> context.getString(R.string.tool_hide)
         // The tile says what tapping it will do, not what is currently true: "One-handed" turns it
         // on, "Full width" turns it off. A tile labelled with a state leaves you guessing which.
         Key.TOOL_HAND ->
@@ -2260,9 +2430,9 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.TOOLS -> openTools()
             Key.HIDE -> listener?.onDismiss()
             Key.TOOL_CLIPS -> openClips()
-            Key.TOOL_SYMBOLS -> { layer = Layer.SYMBOLS; rebuild() }
-            Key.TOOL_HEIGHT -> listener?.onOpenHeight()
-            Key.TOOL_SETTINGS -> listener?.onOpenSettings()
+            Key.TOOL_EMOJI -> openEmoji()
+            Key.TOOL_GIFS -> openGifs()
+            Key.TOOL_HIDE -> listener?.onDismiss()
             Key.TOOL_HAND -> setOneHanded(if (narrowed) Prefs.HAND_OFF else defaultHand())
             Key.HAND_RESET -> setOneHanded(Prefs.HAND_OFF)
             Key.CLIP_BACK -> { layer = Layer.LETTERS; rebuild() }
@@ -2270,6 +2440,10 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.CLIP_NEXT -> { if (clipPage < clipPages() - 1) { clipPage++; rebuild() } }
             Key.CLIP_CLEAR -> writeClips { Clips.clearUnpinned(it) }
             Key.CLIP_BLANK -> { }
+            Key.GIF_BACK -> { layer = Layer.LETTERS; rebuild() }
+            Key.GIF_SEARCH -> listener?.onGifSearch()
+            Key.GIF_PREV -> { if (gifPage > 0) { gifPage--; rebuild() } }
+            Key.GIF_NEXT -> { if (gifPage < gifPages() - 1) { gifPage++; rebuild() } }
             Key.EMOJI_SEARCH -> listener?.onEmojiSearch()
             Key.SYMBOLS -> { layer = Layer.SYMBOLS; rebuild() }
             Key.MORE -> { layer = Layer.MORE; rebuild() }
@@ -2292,6 +2466,13 @@ class LightKeyboardView @JvmOverloads constructor(
                 // An emoji cell commits on lift, not here — see onTouchEvent. A drag across the grid
                 // is a scroll, and committing on touch-down would insert an emoji every time.
                 if (Key.isEmojiCell(id)) return false
+                if (Key.isGifCell(id)) {
+                    gifPanel.results.getOrNull(Key.gifCellIndex(id))?.let { gif ->
+                        gifPanel.remember(gif)
+                        listener?.onGif(gif.sendUrl, gif.label)
+                    }
+                    return false
+                }
                 if (Key.isClipCell(id)) {
                     clips.getOrNull(Key.clipCellIndex(id))?.let { listener?.onPaste(it.text) }
                     return false
@@ -2442,6 +2623,10 @@ class LightKeyboardView @JvmOverloads constructor(
         /** Clips on one page of the clipboard. Three, leaving the fourth band for the controls —
          *  the same four bands every other layer uses, so the keyboard never changes height. */
         const val CLIP_ROWS = 3
+
+        /** GIF cells on a page. Three across keeps a cell close to square at one row-pitch tall. */
+        const val GIF_ROWS = 3
+        const val GIF_COLS = 3
 
         /** Share of the screen the keys keep when narrowed to one hand. */
         const val ONE_HANDED_FRACTION = 0.80f

@@ -17,6 +17,43 @@ def resolvedKeystore = {
 }()
 def haveKeystore = resolvedKeystore != null && resolvedKeystore.exists()
 
+/**
+ * The GIF search key the app ships with, so GIFs work on a fresh install with nothing to set up.
+ *
+ * `local.properties` (git-ignored) for a local build, the `KLIPY_KEY` repository secret in CI.
+ * Never committed: this repository is public, and a key in it is a key that gets scraped and
+ * rate-limited for every user. An empty string is a perfectly good build — GIF search is then off
+ * until somebody puts their own key in Settings, which is where it was before this existed.
+ */
+def klipyKey = {
+    def local = rootProject.file('local.properties')
+    def fromFile = null
+    if (local.exists()) {
+        def props = new Properties()
+        local.withInputStream { props.load(it) }
+        fromFile = props.getProperty('klipyKey')
+    }
+    fromFile ?: System.getenv('KLIPY_KEY') ?: ''
+}()
+
+/**
+ * Scrambles the key so it is not a readable string in the shipped APK.
+ *
+ * XOR against a fixed pad, then Base64 — undone by `api/KlipyKey.kt`. Be clear about what this
+ * buys: anything the app can decode, someone holding the APK can decode, because the pad is in the
+ * same binary. What it stops is `strings app.apk | grep klipy` and the scrapers that walk public
+ * repositories for things shaped like keys, which at this scale is the whole of the threat. The
+ * real protection is that the key can be rotated and the next build carries the new one.
+ */
+static String scrambleKey(String value) {
+    if (!value) return ''
+    def pad = 'brightkeyboard'.getBytes('UTF-8')
+    def bytes = value.getBytes('UTF-8')
+    byte[] out = new byte[bytes.length]
+    for (int i = 0; i < bytes.length; i++) out[i] = (byte) (bytes[i] ^ pad[i % pad.length])
+    return Base64.encoder.encodeToString(out)
+}
+
 android {
     namespace 'app.lightphonekeyboard'
     compileSdk 35
@@ -40,6 +77,9 @@ android {
 
         // Light Phone 3 is arm64 — ship only its native libs (Vosk .so) to keep the APK small.
         ndk { abiFilters 'arm64-v8a' }
+
+        // Scrambled, not encrypted — see scrambleKey above. Decoded by api/KlipyKey.kt.
+        buildConfigField 'String', 'KLIPY_KEY', "\"${scrambleKey(klipyKey)}\""
     }
 
     compileOptions {
@@ -93,6 +133,7 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
+    buildFeatures { buildConfig true }
     lint { abortOnError false }
 }
 
