@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.7.x** (tag `v1.7.<n>`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v1.8.x** (tag `v1.8.<n>`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -121,7 +121,10 @@ Optional settings, all in the app itself:
 - **The tools page** — the tools key opens a page of five tiles: **Clipboard**, **Emoji**, **GIFs**,
   **One-handed** and **Hide keyboard**. Five things that can only be done from here, and nothing that
   is a shortcut to somewhere else.
-- **GIFs** — search [KLIPY](https://klipy.com) and drop one straight into the field as a picture.
+- **GIFs** — a full-screen page, not a keyboard-sized slot: they move, they are shown whole rather
+  than cropped square, and a **hold stars one**. The star key shows only the starred ones, which is
+  the one view here that needs no network at all. Search [KLIPY](https://klipy.com) and drop one
+  straight into the field as a picture.
   Where a field takes no images — most fields are for text, and a keyboard cannot make one accept
   something it hasn't declared — the GIF goes on the clipboard instead and the keyboard says so, so
   it stays a picture either way. The ones you have used lately come first. This is the only part of
@@ -289,6 +292,27 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v1.8.x** (2026-09-18) — **The GIF page fills the screen, the GIFs move, and you can keep one.**
+
+  Choosing between pictures through a slot an inch tall is choosing blind. The page now takes most
+  of the display and hands it straight back on the way out, with the number of rows coming from the
+  height rather than a constant. Cells are sized to fill that height — forcing them square spent the
+  whole page on cell size and left a band of black under the last row, fitting six GIFs on a page
+  that used to hold nine.
+
+  Every GIF is drawn **whole**, fitted inside its cell rather than cropped to fill it. Cropping cut
+  the ends off every wide one, and a GIF is usually wide because the thing that makes it funny is at
+  one end.
+
+  They **animate**, which needs API 28 against this app's minimum of 26 — below that, and whenever a
+  decode fails or the file is large, the still frame is drawn and everything still works. Only the
+  page on screen ever runs, and every way off it stops them.
+
+  **Hold a GIF to star it.** Starred ones come first when the page opens, and the star key shows only
+  them — the one part of the picker that works with the radio off. Cells had to move from committing
+  on touch-down to committing on the lift for this: a hold cannot be told from a tap until the finger
+  goes.
 
 - **v1.7.x** (2026-09-18) — **A GIF goes in as a picture, and a search waits for return.**
 
