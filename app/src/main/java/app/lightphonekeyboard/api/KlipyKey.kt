@@ -8,7 +8,7 @@ import java.util.Base64
  *
  * It exists so GIFs work on a fresh install with nothing to set up — the same bargain every other
  * messenger makes, where the GIF button is simply there. It is built in from a repository secret
- * rather than committed (see `app/build.gradle.kts`), and stored scrambled rather than as a
+ * rather than committed (see `app/build.gradle`), and stored scrambled rather than as a
  * readable string.
  *
  * ### What the scrambling is and isn't
@@ -29,7 +29,7 @@ import java.util.Base64
  */
 object KlipyKey {
 
-    /** Must match `scramble`'s pad in `app/build.gradle.kts` — the two are one mechanism split
+    /** Must match `scrambleKey`'s pad in `app/build.gradle` — the two are one mechanism split
      *  across a build script and a runtime, and changing one alone yields a key that decodes to
      *  rubbish and a 401 nobody can explain. */
     internal const val PAD = "brightkeyboard"

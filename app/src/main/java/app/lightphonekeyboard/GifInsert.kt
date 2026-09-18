@@ -53,6 +53,7 @@ object GifInsert {
         editor: EditorInfo?,
         url: String,
         label: String,
+        id: String = "",
     ): Result {
         if (url.isBlank()) return Result.FAILED
         if (!accepts(editor)) return if (commitLink(ic, url)) Result.LINK else Result.FAILED
@@ -76,6 +77,24 @@ object GifInsert {
         return if (ok) Result.FILE else if (commitLink(ic, url)) Result.LINK else Result.FAILED
     }
 
+    /**
+     * Tell the provider a GIF was actually used.
+     *
+     * KLIPY's terms ask for it and their ranking runs on it — a provider that never hears which
+     * results were picked ranks worse for everybody. Best-effort by construction: it is fired after
+     * the insert has already happened, and a failure here must never read as "the GIF didn't send",
+     * because it did.
+     */
+    fun reportUse(ctx: Context, id: String) {
+        if (id.isBlank()) return
+        runCatching {
+            val key = Prefs.klipyKey(ctx).ifBlank { app.lightphonekeyboard.api.KlipyKey.builtIn }
+            if (key.isBlank()) return
+            app.lightphonekeyboard.api.KlipyApi(key)
+                .registerShare(id, Prefs.gifCustomerId(ctx))
+        }
+    }
+
     /** True when the focused field said it takes GIFs. */
     fun accepts(editor: EditorInfo?): Boolean {
         val types = editor?.let { EditorInfoCompat.getContentMimeTypes(it) } ?: return false
@@ -87,18 +106,25 @@ object GifInsert {
 
     private fun download(ctx: Context, url: String): File? = runCatching {
         val dir = File(ctx.cacheDir, DIR).apply { mkdirs() }
-        prune(dir)
         // Named from the URL rather than at random, so picking the same GIF twice reuses the file
-        // instead of filling the cache with copies of it.
+        // instead of filling the cache with copies of it. A digest rather than String.hashCode:
+        // the name is what the reuse check trusts, and two colliding URLs would silently insert
+        // the wrong GIF, forever, because the bad file is then cached.
         val file = File(dir, name(url))
         if (file.isFile && file.length() > 0L) return@runCatching file
+        // Pruned only once the reuse check has passed, or the sweep could delete the very file it
+        // was about to hand back — and, worse, one whose read grant another app is still holding.
+        prune(dir)
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
         }
         try {
             if (conn.responseCode !in 200..299) return@runCatching null
-            val tmp = File(dir, "${file.name}.part")
+            // A temp file per attempt, not per URL. Two downloads of the same GIF — a double tap,
+            // or a second finger — would otherwise interleave writes into one file and rename a
+            // half-written GIF into place, where the reuse check above accepts it from then on.
+            val tmp = File.createTempFile(file.name, ".part", dir)
             var total = 0L
             tmp.outputStream().use { out ->
                 conn.inputStream.use { input ->
@@ -126,8 +152,12 @@ object GifInsert {
     }
 
     private fun name(url: String): String {
-        val hash = url.hashCode().toLong() and 0xFFFFFFFFL
-        return "gif-$hash.gif"
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(url.toByteArray())
+        val sb = StringBuilder("gif-")
+        // Half the digest is far more than enough to make a collision not a thing that happens,
+        // and it keeps the filename short enough to read in a bug report.
+        for (i in 0 until 16) sb.append("%02x".format(digest[i]))
+        return sb.append(".gif").toString()
     }
 
     /** Keep the directory small. Oldest first, because the newest is the one about to be reused. */

@@ -132,7 +132,7 @@ class LightKeyboardView @JvmOverloads constructor(
          * A GIF was picked. The host downloads it and hands it to the field — see [GifInsert],
          * which is also where the case of a field that will not take one is handled.
          */
-        fun onGif(url: String, label: String)
+        fun onGif(url: String, label: String, id: String)
 
         /** The search key on the GIF page: the letters come back and the strip shows the query. */
         fun onGifSearch()
@@ -957,7 +957,11 @@ class LightKeyboardView @JvmOverloads constructor(
         val gridBottom = top + padTop + GIF_ROWS * rowPitch
         val w = contentLeft + contentW
         val drawW = contentW - padSide * 2
-        val shown = gifPanel.results
+        // Snapshotted, and every other path reads the snapshot. [gifPanel.results] is written from
+        // the network thread, so re-reading it when a finger lands would index a different list
+        // from the one these cells were built for — and send a GIF the user never saw.
+        gifs = gifPanel.results
+        val shown = gifs
         val first = gifPage * GIF_ROWS * GIF_COLS
         for (r in 0 until GIF_ROWS) {
             val bandTop = if (r == 0) top else top + padTop + r * rowPitch
@@ -1006,16 +1010,38 @@ class LightKeyboardView @JvmOverloads constructor(
     }
 
     /** The GIF library and the thumbnails it has decoded. See [GifPanel]. */
-    val gifPanel = GifPanel(context).apply {
+    private val gifPanel = GifPanel(context).apply {
         onChanged = {
             // Results and thumbnails both land off the network thread; this is what puts them on
             // screen. A full rebuild rather than an invalidate, because the number of cells with
-            // something in them has usually changed.
-            if (layer == Layer.GIFS) rebuild()
+            // something in them has usually changed — and the page has to follow, or a shorter
+            // result set leaves the grid parked past its own end, showing nine blanks and no
+            // explanation.
+            if (layer == Layer.GIFS) {
+                gifPage = gifPage.coerceIn(0, gifPages() - 1)
+                rebuild()
+            }
         }
     }
 
     private var gifPage = 0
+
+    /** The results the placed cells belong to. Stale together with [placed], never separately. */
+    private var gifs: List<app.lightphonekeyboard.text.Gif> = emptyList()
+
+    /**
+     * Leave the GIF page.
+     *
+     * [listener] is told, and that is the whole point of the call: a GIF search borrows the letter
+     * keys, and the query lives in the host. Without this the query survives the page — the letters
+     * come back, every one of them feeds a search nobody can see instead of the document, and the
+     * second one throws the user back onto the grid. A keyboard that has silently stopped typing.
+     */
+    private fun closeGifs() {
+        listener?.onEmojiPanelClosed()
+        layer = Layer.LETTERS
+        rebuild()
+    }
 
     private fun openGifs() {
         listener?.onEmojiPanelClosed()
@@ -1030,6 +1056,20 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun gifPages(): Int {
         val perPage = GIF_ROWS * GIF_COLS
         return ((gifPanel.results.size + perPage - 1) / perPage).coerceAtLeast(1)
+    }
+
+    /**
+     * The insert failed. Put the page back with the reason on it.
+     *
+     * The alternative is what this replaced: the keyboard goes back to letters and nothing happens,
+     * ever, which from the user's side is a tap the keyboard ignored. [GifInsert] falls back to the
+     * link before it reports a failure at all, so reaching here means even that did not land.
+     */
+    fun gifInsertFailed() {
+        gifPanel.failed(context.getString(R.string.gif_insert_failed))
+        gifPage = 0
+        layer = Layer.GIFS
+        rebuild()
     }
 
     /** Put the panel back showing [query]'s results. The search flow calls this, like the emoji one. */
@@ -1153,7 +1193,7 @@ class LightKeyboardView @JvmOverloads constructor(
         // back to a keyboard still showing one — after hiding it, or after a settings screen it
         // opened — means coming back to no keys. The symbols layer is deliberately not reset here:
         // somebody who switched to it before the keyboard was hidden meant to be on it.
-        if (layer == Layer.TOOLS || layer == Layer.CLIPS) layer = Layer.LETTERS
+        if (layer == Layer.TOOLS || layer == Layer.CLIPS || layer == Layer.GIFS) layer = Layer.LETTERS
         rebuild()
     }
 
@@ -1174,7 +1214,8 @@ class LightKeyboardView @JvmOverloads constructor(
      * The strip is the only place a query can be seen: it is deliberately not in the document, so
      * without this the user would be typing blind.
      */
-    fun setSearchQuery(query: String?) {
+    fun setSearchQuery(query: String?, hint: String? = null) {
+        searchHint = hint
         if (searchQuery == query) return
         val wasShowing = stripShowing
         searchQuery = query
@@ -1187,6 +1228,9 @@ class LightKeyboardView @JvmOverloads constructor(
     }
 
     private var searchQuery: String? = null
+
+    /** What the strip says before anything is typed. Null means the emoji wording. */
+    private var searchHint: String? = null
 
     /** The strip's height when it is shown at all, so [setSearchQuery] can restore it. */
     private var stripFullH = 0f
@@ -1237,7 +1281,7 @@ class LightKeyboardView @JvmOverloads constructor(
         if (layer == Layer.EMOJI && variantGlyphs.isNotEmpty()) drawVariantRow(canvas)
         if (layer == Layer.EMOJI && emojiGlyphs.isEmpty()) drawEmojiEmpty(canvas)
         if (layer == Layer.CLIPS && clips.isEmpty()) drawClipsEmpty(canvas)
-        if (layer == Layer.GIFS && gifPanel.results.isEmpty()) drawGifsEmpty(canvas)
+        if (layer == Layer.GIFS && gifs.isEmpty()) drawGifsEmpty(canvas)
         if (stripH > 0f) drawStrip(canvas)
         if (tracing || trailFadeFrom != 0L) drawTrail(canvas)
     }
@@ -1255,7 +1299,7 @@ class LightKeyboardView @JvmOverloads constructor(
         searchQuery?.let { q ->
             textPaint.textSize = stripTextSize
             val baseline = stripH / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
-            val shown = if (q.isEmpty()) context.getString(R.string.emoji_search_hint) else "$q…"
+            val shown = if (q.isEmpty()) searchHint ?: context.getString(R.string.emoji_search_hint) else "$q…"
             canvas.drawText(fitToWidth(shown, width - dpf(20)), width / 2f, baseline, textPaint)
             return
         }
@@ -1433,7 +1477,7 @@ class LightKeyboardView @JvmOverloads constructor(
      * is the better trade.
      */
     private fun drawGif(canvas: Canvas, pk: PlacedKey) {
-        val gif = gifPanel.results.getOrNull(Key.gifCellIndex(pk.id)) ?: return
+        val gif = gifs.getOrNull(Key.gifCellIndex(pk.id)) ?: return
         val bitmap = gifPanel.thumbnail(gif.previewUrl)
         if (bitmap == null) {
             // Not here yet. A hairline box says "something is coming" without the flicker of a
@@ -1715,7 +1759,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 // pages does something one-way and unretractable — opens a settings screen, hides the
                 // keyboard, pastes a clip — so a palm landing there is not a stray letter that can be
                 // deleted. The emoji layer already refuses second fingers for the same reason.
-                if (!tracing && layer != Layer.TOOLS && layer != Layer.CLIPS) {
+                if (!tracing && layer != Layer.TOOLS && layer != Layer.CLIPS && layer != Layer.GIFS) {
                     val idx = ev.actionIndex
                     pressDown(ev.getPointerId(idx), ev.getX(idx), ev.getY(idx))
                 }
@@ -2440,7 +2484,7 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.CLIP_NEXT -> { if (clipPage < clipPages() - 1) { clipPage++; rebuild() } }
             Key.CLIP_CLEAR -> writeClips { Clips.clearUnpinned(it) }
             Key.CLIP_BLANK -> { }
-            Key.GIF_BACK -> { layer = Layer.LETTERS; rebuild() }
+            Key.GIF_BACK -> closeGifs()
             Key.GIF_SEARCH -> listener?.onGifSearch()
             Key.GIF_PREV -> { if (gifPage > 0) { gifPage--; rebuild() } }
             Key.GIF_NEXT -> { if (gifPage < gifPages() - 1) { gifPage++; rebuild() } }
@@ -2467,9 +2511,9 @@ class LightKeyboardView @JvmOverloads constructor(
                 // is a scroll, and committing on touch-down would insert an emoji every time.
                 if (Key.isEmojiCell(id)) return false
                 if (Key.isGifCell(id)) {
-                    gifPanel.results.getOrNull(Key.gifCellIndex(id))?.let { gif ->
+                    gifs.getOrNull(Key.gifCellIndex(id))?.let { gif ->
                         gifPanel.remember(gif)
-                        listener?.onGif(gif.sendUrl, gif.label)
+                        listener?.onGif(gif.sendUrl, gif.label, gif.id)
                     }
                     return false
                 }

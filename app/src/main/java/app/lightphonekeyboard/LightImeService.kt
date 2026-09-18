@@ -751,22 +751,29 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      * the end: the commit goes to the connection the user was typing into when they tapped, and if
      * that is gone the commit simply fails, which is the correct outcome.
      */
-    override fun onGif(url: String, label: String) {
+    override fun onGif(url: String, label: String, id: String) {
         if (searchingPanel) endPanelSearch()
         val ic = currentInputConnection ?: return
         val editor = currentInputEditorInfo
         clearUndo()
         clearAlternatives()
         keyboard?.showLetters()
-        Thread({
-            val result = GifInsert.insert(this, ic, editor, url, label)
-            if (result == GifInsert.Result.FAILED) {
-                mainHandler.post { keyboard?.setSearchQuery(null) }
+        // One at a time. A thread per tap meant six quick taps were six concurrent downloads of up
+        // to 12 MB, committing into the field in whatever order they finished.
+        gifWork.execute {
+            val result = GifInsert.insert(this, ic, editor, url, label, id)
+            if (result != GifInsert.Result.FAILED) GifInsert.reportUse(this, id)
+            mainHandler.post {
+                if (result == GifInsert.Result.FAILED) keyboard?.gifInsertFailed()
             }
-        }, "light-kb-gif").apply { isDaemon = true }.start()
+        }
     }
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    private val gifWork = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "light-kb-gif").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
+    }
 
     // ------------------------------------------------------------------ clipboard history
 
@@ -903,7 +910,11 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     private fun refreshPanelSearch() {
         val q = panelQuery?.toString() ?: return
         val kb = keyboard ?: return
-        kb.setSearchQuery(q)
+        val hint = when (searchKind) {
+            SearchKind.EMOJI -> null
+            SearchKind.GIF -> app.lightphonekeyboard.api.KlipyApi.SEARCH_HINT
+        }
+        kb.setSearchQuery(q, hint)
         val minimum = when (searchKind) {
             SearchKind.EMOJI -> app.lightphonekeyboard.text.Emoji.MIN_QUERY
             // Two letters, against emoji's own minimum. A GIF search is a network round trip, so

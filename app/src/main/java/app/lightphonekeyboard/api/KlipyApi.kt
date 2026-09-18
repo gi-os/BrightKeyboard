@@ -25,11 +25,12 @@ import org.json.JSONObject
  *
  * ### The key
  *
- * Per-install, typed in Settings or scanned as a QR code, encrypted at rest exactly like the
- * personal word list ([app.lightphonekeyboard.Prefs.klipyKey]). **Not** compiled into the APK:
- * this repo is public, and a key in it is a key that gets scraped and rate-limited for everyone.
- * KLIPY's test key allows 100 calls an hour, which is more than a phone with one user does; a
- * production key is a form on their partner panel.
+ * Two of them, and the user's wins. A key built into the APK at build time from a repository
+ * secret ([app.lightphonekeyboard.api.KlipyKey]) so GIFs work on a fresh install with nothing to
+ * set up, and one the user may type in Settings ([app.lightphonekeyboard.Prefs.klipyKey]), stored
+ * as an ordinary preference. Neither is in this repository, which is public: a key committed here
+ * is a key that gets scraped and rate-limited for everyone. KLIPY's test key allows 100 calls an
+ * hour; a production key is a form on their partner panel.
  *
  * The key goes in the *path*, not a header or a query — their design, not ours.
  *
@@ -147,9 +148,10 @@ class KlipyApi(private val key: String) {
         const val KEY_SOURCE = "klipy.com/developers"
 
         /**
-         * Their own placeholder wording, which their branding guidelines ask for, and the line
-         * under the grid. Kept here rather than typed into the screen so the two cannot drift
-         * apart from the provider this file talks to.
+         * Their own placeholder wording, which their branding guidelines ask for. [SEARCH_HINT] is
+         * what the strip shows while a GIF search is running and [ATTRIBUTION] is the line on the
+         * settings screen. Kept here rather than typed into either, so neither can drift apart from
+         * the provider this file talks to.
          */
         const val SEARCH_HINT = "Search KLIPY"
         const val ATTRIBUTION = "Powered by KLIPY"
@@ -276,16 +278,15 @@ class KlipyApi(private val key: String) {
          * What to draw in the grid, in order of preference.
          *
          * **Not the smallest**, which is what this used to take and what made the results look
-         * soft. The panel is 1080px across a hair under four inches, so a two-column cell is
-         * roughly 400 device pixels wide — and an `xs`/`nanogif` rendition is commonly 120px, i.e.
-         * upscaled more than three times before anybody sees it. `sm`/`tinygif` (~220px) is the
-         * honest floor and `md` is better than either, so `md` is taken when there is no `sm`
-         * rather than falling back down to `xs`.
+         * soft. The panel is 1080px across a hair under four inches, so a cell in this keyboard's
+         * three-column grid is roughly 270 device pixels wide — and an `xs`/`nanogif` rendition is
+         * commonly 120px, i.e. upscaled more than twice before anybody sees it. `sm`/`tinygif`
+         * (~220px) is the honest floor and `md` is better than either, so `md` is taken when there
+         * is no `sm` rather than falling back down to `xs`.
          *
-         * It stops short of preferring `md` outright: a screenful is a dozen cells, and at medium
-         * that is several megabytes of download per scroll over this phone's connection. If the
-         * grid ever wants to be sharper still, move [Size.MD] to the front of this list — that is
-         * the whole change.
+         * It stops short of preferring `md` outright: a page is nine cells, and at medium that is
+         * megabytes of download per page turn over this phone's connection. If the grid ever wants
+         * to be sharper still, move [Size.MD] to the front of this list — that is the whole change.
          */
         private val PREVIEW_ORDER = listOf(Size.SM, Size.MD, Size.FULL, Size.XS, Size.HD, Size.UNKNOWN)
 

@@ -59,9 +59,24 @@ class GifPanel(private val context: Context) {
     /** Called on the UI thread whenever anything above changed and the page should repaint. */
     var onChanged: (() -> Unit)? = null
 
-    private val work = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "light-kb-gifs").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
+    /**
+     * Searches and thumbnails run on **separate** threads.
+     *
+     * On one, a queue of nine thumbnail downloads sits in front of the next search, each able to
+     * hold the thread for its full timeout — so typing another letter answered a minute later, or
+     * never. They are different jobs with different urgency and they get different queues.
+     */
+    private val searchWork = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "light-kb-gif-search").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
+
+    private val thumbWork = Executors.newFixedThreadPool(THUMB_THREADS) { r ->
+        Thread(r, "light-kb-gif-thumbs").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
+    }
+
+    /** Debounce, so a five-letter query is one request rather than four abandoned ones. */
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pending: Runnable? = null
 
     /**
      * Decoded thumbnails, by URL. Sized in kilobytes rather than entries, because the whole risk
@@ -74,24 +89,43 @@ class GifPanel(private val context: Context) {
     /** URLs already being fetched, so a repaint does not start the same download again. */
     private val inFlight = HashSet<String>()
 
-    /** The generation a request belongs to. A result from an abandoned search is dropped. */
-    private var generation = 0
+    /**
+     * URLs that failed. Without this, a thumbnail that cannot be fetched is retried on every single
+     * draw pass — offline, that is nine downloads per repaint, each holding a thread for its whole
+     * timeout. Bounded, and cleared whenever a new result set arrives, so a genuine blip is retried
+     * the next time the user searches rather than never.
+     */
+    private val failedThumbs = HashSet<String>()
+
+    /**
+     * The generation a request belongs to, so a result from an abandoned search is dropped.
+     *
+     * Atomic, and the check and the publish happen together under [lock]. A plain `Int` gave the
+     * worker no guarantee of ever seeing an increment from the main thread, and even a fresh read
+     * left a window between the check and the write where a newer search could start and have its
+     * LOADING state overwritten by the older one's results.
+     */
+    private val generation = java.util.concurrent.atomic.AtomicInteger(0)
+
+    private val lock = Any()
 
     private fun key(): String =
         Prefs.klipyKey(context).ifBlank { KlipyKey.builtIn }
 
-    /** Open on trending, or re-run the last query. */
+    /** Open on trending, or re-run the last query. Immediate: this one is a deliberate tap. */
     fun open() {
-        load(query)
+        load(query, 0L)
     }
 
+    /** A letter was typed. Debounced — see [DEBOUNCE_MS]. */
     fun search(text: String) {
-        load(text)
+        load(text, DEBOUNCE_MS)
     }
 
-    private fun load(text: String) {
+    private fun load(text: String, delayMs: Long) {
         val k = key()
         query = text
+        pending?.let { main.removeCallbacks(it) }
         if (k.isBlank()) {
             state = State.NO_KEY
             results = emptyList()
@@ -101,32 +135,66 @@ class GifPanel(private val context: Context) {
         state = State.LOADING
         results = emptyList()
         message = null
+        synchronized(inFlight) { failedThumbs.clear() }   // one monitor guards both sets
         announce()
-        val mine = ++generation
+        val mine = generation.incrementAndGet()
         val customer = Prefs.gifCustomerId(context)
-        work.execute {
-            val outcome = runCatching {
-                val api = KlipyApi(k)
-                if (text.isBlank()) api.trending(customerId = customer)
-                else api.search(text, customerId = customer)
+        val go = Runnable {
+            searchWork.execute {
+                val outcome = runCatching {
+                    val api = KlipyApi(k)
+                    if (text.isBlank()) api.trending(customerId = customer)
+                    else api.search(text, customerId = customer)
+                }
+                // A search the user has already moved on from must not overwrite the one they are
+                // waiting for. The check and the publish are one step: between them, another
+                // keystroke can start a newer search whose LOADING state this would then erase.
+                synchronized(lock) {
+                    if (mine != generation.get()) return@execute
+                    outcome.onSuccess { page ->
+                        results = withRecents(text, page.gifs)
+                        state = if (results.isEmpty()) State.EMPTY else State.READY
+                        message = null
+                    }.onFailure { e ->
+                        results = emptyList()
+                        state = State.FAILED
+                        message = (e as? app.lightphonekeyboard.api.ApiException)?.reason
+                            ?: context.getString(R.string.gif_failed)
+                        Log.w(TAG, "gif request failed", e)
+                    }
+                }
+                announce()
             }
-            // A search the user has already moved on from must not overwrite the one they are
-            // waiting for. Checked here rather than at the call site because the call site has
-            // already returned.
-            if (mine != generation) return@execute
-            outcome.onSuccess { page ->
-                results = page.gifs
-                state = if (page.gifs.isEmpty()) State.EMPTY else State.READY
-                message = null
-            }.onFailure { e ->
-                results = emptyList()
-                state = State.FAILED
-                message = (e as? app.lightphonekeyboard.api.ApiException)?.reason
-                    ?: "Couldn't reach the GIF service"
-                Log.w(TAG, "gif request failed", e)
-            }
-            announce()
         }
+        pending = go
+        if (delayMs <= 0L) go.run() else main.postDelayed(go, delayMs)
+    }
+
+    /**
+     * The GIFs used lately, in front of what came back — but only when nothing was searched for.
+     *
+     * A picker opens on trending, which is what everybody else does and is right for finding
+     * something new. It is not right for the thing most people do most often, which is to send the
+     * same half-dozen GIFs again. Under a query they are not shown at all: the user asked for
+     * something specific, and answering with what they sent last week is not it.
+     */
+    private fun withRecents(query: String, fetched: List<Gif>): List<Gif> {
+        if (query.isNotBlank()) return fetched
+        val recent = recents()
+        if (recent.isEmpty()) return fetched
+        val seen = recent.mapTo(HashSet()) { it.id }
+        return recent + fetched.filterNot { it.id in seen }
+    }
+
+    /** Put the page into a failed state from outside — the insert failing is not a search failing. */
+    fun failed(reason: String) {
+        synchronized(lock) {
+            generation.incrementAndGet()   // whatever is in flight no longer owns the page
+            results = emptyList()
+            state = State.FAILED
+            message = reason
+        }
+        announce()
     }
 
     /**
@@ -139,15 +207,19 @@ class GifPanel(private val context: Context) {
         if (url.isBlank()) return null
         thumbs.get(url)?.let { return it }
         synchronized(inFlight) {
+            if (url in failedThumbs) return null
             if (!inFlight.add(url)) return null
         }
-        work.execute {
+        thumbWork.execute {
             val bitmap = fetchFrame(url)
-            synchronized(inFlight) { inFlight.remove(url) }
-            if (bitmap != null) {
-                thumbs.put(url, bitmap)
-                announce()
+            // Cached BEFORE the in-flight mark is dropped. The other way round, a draw landing in
+            // between finds neither a bitmap nor a claim and starts the same download again.
+            if (bitmap != null) thumbs.put(url, bitmap)
+            synchronized(inFlight) {
+                inFlight.remove(url)
+                if (bitmap == null && failedThumbs.size < MAX_FAILED) failedThumbs.add(url)
             }
+            if (bitmap != null) announce()
         }
         return null
     }
@@ -221,5 +293,14 @@ class GifPanel(private val context: Context) {
         const val RECENTS = 12
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 20_000
+
+        /** Threads fetching thumbnails. Nine cells, so a few at once fill the page noticeably
+         *  faster than one at a time without being a burst the phone's radio notices. */
+        const val THUMB_THREADS = 3
+
+        /** How long a query waits for the next letter before it is sent. About one keystroke. */
+        const val DEBOUNCE_MS = 260L
+
+        const val MAX_FAILED = 256
     }
 }

@@ -29,8 +29,9 @@ data class Gif(
     val width: Int = 0,
     val height: Int = 0,
 ) {
-    /** Aspect ratio for the grid cell, or 1 when the provider didn't say. Clamped because a
-     *  banner-shaped GIF in a two-column grid makes a row of slivers. */
+    /** Aspect ratio, or 1 when the provider didn't say. Clamped because a banner-shaped GIF makes
+     *  a row of slivers. The keyboard's grid centre-crops rather than fitting, so this is advisory
+     *  there; it is the provider's own shape, kept for anything that wants to lay one out. */
     val ratio: Float
         get() = if (width > 0 && height > 0) (width.toFloat() / height).coerceIn(0.5f, 2f) else 1f
 
