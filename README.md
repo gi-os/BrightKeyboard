@@ -195,11 +195,15 @@ correcting for how a fingertip is sensed, which is the only job it has.
 The model is 26 numbers a side. It lives in this app's own settings, goes nowhere else, and is sent
 nowhere at all. Key units rather than pixels, so changing the keyboard height keeps it.
 
-**Touch**, in settings, draws the whole thing. Each key shows where its target sits, the part of it
-no spelling model may overrule, how loosely you hit it against your own average, and how many taps
-that rests on. Four toggles turn those layers on and off. Type in the field on that page and the
-picture moves under your thumb, because it is the keyboard's own live model and not a copy of it.
-The same page holds **Reset touch model**, which puts everything back to the starting point.
+**Touch**, in settings, turns on an overlay that draws all of it **on the keys themselves**. Each key
+gets a line and a dot to where your taps for it land, a shaded box for the part no spelling model may
+overrule, an oval for how loosely you hit it against your own average, and the number of taps that
+rests on. Four toggles turn those layers on and off, and they take effect while you look at them.
+Faint means barely measured. The same page holds **Reset touch model**.
+
+It draws on the real keys because the keyboard is the only thing on the phone with the right geometry
+to explain itself on. A diagram on a settings page has to invent a keyboard to draw, and then share a
+screen with the real one.
 
 Whether it helps you is not something a benchmark can promise. A simulated typist who lands two
 thirds of a row low reads at 88.6% with it and 69.4% without, and an accurate typist is left alone.
@@ -336,6 +340,14 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v3.3.x** (2026-09-18) — **The overlay moved onto the keys.**
+
+  v3.2 drew the model as a diagram on a settings page. It did not fit, and it could not. A picture of
+  a keyboard has to invent a keyboard to draw on. Then it has to share a screen with the real one.
+
+  The overlay now paints on the real keys, at real size, wherever you are typing. **Touch** in
+  settings holds the switch, the four layer toggles and the reset. The keys are the picture.
 
 - **v3.2.x** (2026-09-18) — **Look at what it learned.**
 
