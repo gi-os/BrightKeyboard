@@ -137,9 +137,15 @@
     <string name="setup_voice">Voice dictation</string>
     <string name="setup_voice_dl">(40MB download)</string>
     <string name="setup_voice_clear">Delete model</string>
-    <string name="touch_heading">Touch</string>
+    <string name="touch_title">Touch</string>
+    <string name="setup_touch">Touch</string>
+    <string name="setup_touch_value">See it</string>
+    <string name="touch_blurb">Where your taps for each key really land. The keyboard reads an unclear tap against this and never moves a key on screen.</string>
+    <string name="touch_try">Type here to watch it move</string>
+    <string name="touch_legend">Box: the key as drawn. Line and dot: how far its target has moved, and to where. Oval: how loosely you hit it, against your own average. Number: taps counted. Faint means barely measured.</string>
+    <string name="touch_summary">%1$d taps counted. Targets have moved %2$d%% of a key on average.</string>
+    <string name="touch_empty">Nothing measured yet. Type in the field below.</string>
+    <string name="touch_none">Open the keyboard below to see the live targets.</string>
     <string name="touch_reset">Reset touch model</string>
-    <string name="touch_detail">The keyboard learns where your taps for each key actually land, and reads an unclear tap against that. Reset it if typing starts to feel off. It will learn again as you type.</string>
     <string name="touch_reset_done">Touch model reset</string>
-    <string name="touch_reset_done_detail">Takes effect the next time the keyboard opens.</string>
 </resources>

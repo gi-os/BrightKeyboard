@@ -315,6 +315,26 @@ class SetupActivity : AppCompatActivity() {
             }
         }
 
+        // The learned touch targets, drawn. Nothing on this page is a setting — it is the only place
+        // the model the keyboard types by can be looked at, and the only place it can be cleared.
+        val touchRow = run {
+            val title = label(getString(R.string.setup_touch), 20f, R.color.white)
+                .apply { setPadding(0, 0, 0, 0) }
+            val value = label(getString(R.string.setup_touch_value), 14f, R.color.gray)
+                .apply { setPadding(0, 0, 0, 0) }
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, pad, 0, 0)
+                isClickable = true
+                setOnClickListener {
+                    startActivity(Intent(this@SetupActivity, TouchActivity::class.java))
+                }
+                addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(value)
+            }
+        }
+
         // "Try the keyboard" — a compact toggle row, not a boxed input: tap to pop the keyboard up and
         // feel the current height / layout / accuracy; tap the chevron (or the keyboard's own hide key)
         // to close. Last in the list so the keyboard never covers another setting. If Light isn't the
@@ -362,7 +382,8 @@ class SetupActivity : AppCompatActivity() {
             hapticsToggle,
             returnToggle, emojiToggle, hideToggle, clipboardToggle,
             voiceRow, voiceStatus!!,
-            layoutRow, heightRow, handRow, correctionRow, swipeRow, emojiRow, gifRow, wordsRow, tryRow,
+            layoutRow, heightRow, handRow, correctionRow, touchRow, swipeRow, emojiRow, gifRow,
+            wordsRow, tryRow,
         ).forEach { root.addView(it) }
 
         // Reflect the keyboard's real state on the chevron (▴ open / ▾ closed), however it's toggled.

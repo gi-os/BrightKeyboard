@@ -164,6 +164,14 @@ class TouchModel(private val prior: Prior) {
     fun count(i: Int): Float = n[i]
 
     /**
+     * How loosely key [i] is hit compared with this typist's own average. 1 is typical, and the range
+     * is [SPREAD_MIN] to [SPREAD_MAX]. This, not the raw sigma, is the number with a meaning a person
+     * can read: the sigma is that ratio times a smoothing width that was fitted for something else.
+     */
+    fun spreadRatioX(i: Int): Float = sigmaX(i) / prior.sx
+    fun spreadRatioY(i: Int): Float = sigmaY(i) / prior.sy
+
+    /**
      * Move every key that has never been tapped onto the current [Prior], and leave every key that
      * has alone. Called after the layout changes the key size, so a fresh keyboard follows its own
      * geometry without a height change quietly undoing a fortnight of learning.

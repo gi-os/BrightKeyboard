@@ -2744,6 +2744,7 @@ class LightKeyboardView @JvmOverloads constructor(
         val result = if (inCore(x, y, home)) home else resolveLetterTo(x, y, home)
         // Park it. Whether it becomes evidence depends on what the typist does next — see TouchModel.hold.
         touch.hold(result.id[0] - 'a', (x - result.cx) / letterKeyW, (y - result.cy) / rowPitch)
+        TouchInsight.changed()   // no-op unless the touch map is on screen
         return result
     }
 
@@ -2848,6 +2849,7 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun loadTouchModel() {
         if (touchModelLoaded || letterKeys.isEmpty()) return
         touchModelLoaded = true
+        TouchInsight.model = touch   // lend it to the settings screen that draws it
         val saved = Prefs.touchModel(context)
         if (saved != null) {
             touch.copyFrom(TouchModel.parse(saved, touchPrior))
@@ -2869,6 +2871,7 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun saveTouchModel() {
         if (!touchModelLoaded) return   // never write a fresh model over one that has not been read
         touch.flush()   // a tap the typist left standing when they closed the field was accepted
+        TouchInsight.changed()
         val s = touch.serialize()
         if (s == savedTouchModel) return
         savedTouchModel = s
@@ -3026,6 +3029,7 @@ class LightKeyboardView @JvmOverloads constructor(
         removeCallbacks(clearFlash)
         stopBackspaceRepeat()
         saveTouchModel()
+        if (TouchInsight.model === touch) TouchInsight.model = null
         super.onDetachedFromWindow()
     }
 
@@ -3110,7 +3114,24 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun spf(v: Int): Float =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v.toFloat(), resources.displayMetrics)
 
-    private companion object {
+    companion object {
+        /**
+         * The three letter rows of a layout, as plain strings. Shared with [TouchMapView] so the
+         * picture of the targets and the keyboard they belong to cannot drift apart.
+         */
+        fun letterRows(layout: String): List<String> {
+            val rows = when (layout) {
+                Prefs.LAYOUT_AZERTY -> Layout.azerty
+                Prefs.LAYOUT_QWERTZ -> Layout.qwertz
+                else -> Layout.letters
+            }
+            return rows.take(3).map { row -> row.filter { isLetterId(it) }.joinToString("") }
+        }
+
+        private fun isLetterId(id: String) = id.length == 1 && id[0] in 'a'..'z'
+
+        // ---- the rest of this companion is the view's own; a class may only have one ----
+
         /** Clips on one page of the clipboard. Three, leaving the fourth band for the controls —
          *  the same four bands every other layer uses, so the keyboard never changes height. */
         const val CLIP_ROWS = 3
