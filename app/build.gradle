@@ -164,4 +164,10 @@ dependencies {
     implementation 'org.pytorch:executorch-android:1.4.0'
 
     testImplementation 'junit:junit:4.13.2'   // JVM unit tests for the pure TouchModel logic
+    // A real org.json on the *unit test* classpath only. The platform provides org.json at runtime,
+    // so the APK never bundles it — but the android.jar these tests compile against is the stub
+    // one, whose every method throws "Stub!". Without this, everything that parses a GIF answer
+    // fails with a RuntimeException that says nothing about JSON. Not `implementation`: a second
+    // copy of these classes in the APK fails the build on duplicates.
+    testImplementation 'org.json:json:20240303'
 }
