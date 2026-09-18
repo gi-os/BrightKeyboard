@@ -39,6 +39,7 @@ object Prefs {
     private const val KEY_KLIPY_KEY = "klipy_key"
     private const val KEY_GIF_CUSTOMER = "gif_customer_id"
     private const val KEY_RECENT_GIFS = "recent_gifs"
+    private const val KEY_STARRED_GIFS = "starred_gifs"
 
     /** Which edge the keys crowd onto when the board is narrowed; the stored value of [oneHanded]. */
     const val HAND_OFF = "off"
@@ -441,6 +442,18 @@ object Prefs {
 
     fun setRecentGifs(c: Context, value: String) =
         prefs(c).edit().putString(KEY_RECENT_GIFS, value).apply()
+
+    /**
+     * GIFs the user has starred, newest star first.
+     *
+     * Kept apart from the recents rather than being a flag on them, because they answer different
+     * questions and one must not evict the other: recents are what you happened to send and roll
+     * over on their own, a star is a deliberate "keep this one" and is only ever undone by hand.
+     */
+    fun starredGifs(c: Context): String? = prefs(c).getString(KEY_STARRED_GIFS, null)
+
+    fun setStarredGifs(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_STARRED_GIFS, value).apply()
 
     /** Voice dictation (mic key + offline STT). Off by default; turning it on downloads the model. */
     fun voiceEnabled(c: Context): Boolean = prefs(c).getBoolean(KEY_VOICE, false)

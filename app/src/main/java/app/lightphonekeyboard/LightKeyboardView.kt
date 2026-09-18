@@ -5,7 +5,9 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.drawable.AnimatedImageDrawable
 import android.graphics.drawable.Drawable
+import android.os.Build
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.HapticFeedbackConstants
@@ -136,6 +138,9 @@ class LightKeyboardView @JvmOverloads constructor(
 
         /** The search key on the GIF page: the letters come back and the strip shows the query. */
         fun onGifSearch()
+
+        /** A GIF was starred or unstarred by a hold, so the keyboard can say which. */
+        fun onGifStarred(starred: Boolean)
         /** Listening surface tapped — cancel dictation. */
         fun onMicCancel()
 
@@ -235,6 +240,9 @@ class LightKeyboardView @JvmOverloads constructor(
         const val GIF_SEARCH = "__GIF_SEARCH__"
         const val GIF_PREV = "__GIF_PREV__"
         const val GIF_NEXT = "__GIF_NEXT__"
+
+        /** Show only the starred ones. A toggle, and the only page that needs no network. */
+        const val GIF_STARRED = "__GIF_STARRED__"
         const val GIF_CELL_PREFIX = "__GIF_AT_"
         fun gifCell(i: Int) = "$GIF_CELL_PREFIX${i}__"
         fun isGifCell(id: String) = id.startsWith(GIF_CELL_PREFIX)
@@ -475,6 +483,10 @@ class LightKeyboardView @JvmOverloads constructor(
         flashMessage = null
         stripH = if (stripShowing) stripFullH else 0f
 
+        // Animations do not survive a new field either: reset() is the one call every route to a
+        // different field goes through, and a running animation is the only thing here that keeps
+        // working when nobody is looking at it.
+        if (layer == Layer.GIFS) { gifPanel.stopAnimations(); clearGifGesture() }
         // An overlay or a half-finished emoji gesture must not survive a new field. The picker is
         // modal and only the emoji layer can dismiss it, so one left open while the layer goes back
         // to letters paints a black band over the second key row that nothing can clear.
@@ -634,6 +646,9 @@ class LightKeyboardView @JvmOverloads constructor(
      */
     private var stripFullH = 0f
 
+    /** Rows on the current GIF page, worked out from the height rather than fixed. See [layoutGifs]. */
+    private var gifRows = GIF_ROWS
+
     /** A line the keyboard is showing for a moment. Null the rest of the time. See [flash]. */
     private var flashMessage: String? = null
 
@@ -686,6 +701,13 @@ class LightKeyboardView @JvmOverloads constructor(
 
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {
         val w = MeasureSpec.getSize(widthSpec)
+        // The GIF page is the one thing here that is not a keyboard, so it is not keyboard-shaped.
+        // Choosing between pictures four at a time through a slot an inch tall is choosing blind;
+        // it takes most of the screen and gives it straight back on the way out.
+        if (layer == Layer.GIFS && !listening) {
+            setMeasuredDimension(w, gifViewHeight())
+            return
+        }
         // Emoji has 3 glyph rows + 1 back-chevron row = 4, same pitch as the letter layers, so the
         // keyboard keeps a constant height and doesn't jump when you switch to emoji.
         val rowCount = when {
@@ -697,6 +719,20 @@ class LightKeyboardView @JvmOverloads constructor(
         }
         val h = stripTop + padTop + rowCount * rowPitch + padBottom
         setMeasuredDimension(w, h.toInt())
+    }
+
+    /**
+     * How tall the GIF page is.
+     *
+     * Most of the display, with a strip left at the top so the app behind is still visible and the
+     * page does not read as having replaced it. Floored at the ordinary keyboard height, because on
+     * a short screen a "full screen" that is shorter than the keyboard would be a strange thing to
+     * hand somebody.
+     */
+    private fun gifViewHeight(): Int {
+        val display = resources.displayMetrics.heightPixels
+        val keyboard = stripTop + padTop + (GIF_ROWS + 1) * rowPitch + padBottom
+        return maxOf((display * GIF_SCREEN_FRACTION).toInt(), keyboard.toInt())
     }
 
     /**
@@ -991,20 +1027,26 @@ class LightKeyboardView @JvmOverloads constructor(
      */
     private fun layoutGifs() {
         val top = stripTop
-        val gridBottom = top + padTop + GIF_ROWS * rowPitch
         val w = contentLeft + contentW
         val drawW = contentW - padSide * 2
+        // Square cells. A GIF is any shape and every one is drawn whole inside its cell, so the cell
+        // cannot take its shape from the picture — it has to be the one shape every picture can sit
+        // in without the grid going ragged.
+        val cell = drawW / GIF_COLS
+        val available = height - top - padTop - (rowPitch + padBottom)
+        gifRows = (available / cell).toInt().coerceIn(1, GIF_MAX_ROWS)
+        val gridBottom = top + padTop + gifRows * cell
         // Snapshotted, and every other path reads the snapshot. [gifPanel.results] is written from
         // the network thread, so re-reading it when a finger lands would index a different list
         // from the one these cells were built for — and send a GIF the user never saw.
         gifs = gifPanel.results
         val shown = gifs
-        val first = gifPage * GIF_ROWS * GIF_COLS
-        for (r in 0 until GIF_ROWS) {
-            val bandTop = if (r == 0) top else top + padTop + r * rowPitch
-            val bandBottom = if (r == GIF_ROWS - 1) gridBottom else top + padTop + (r + 1) * rowPitch
-            val visTop = top + padTop + r * rowPitch + keyGap
-            val visBottom = visTop + rowKeyH
+        val first = gifPage * gifRows * GIF_COLS
+        for (r in 0 until gifRows) {
+            val bandTop = if (r == 0) top else top + padTop + r * cell
+            val bandBottom = if (r == gifRows - 1) gridBottom else top + padTop + (r + 1) * cell
+            val visTop = top + padTop + r * cell + keyGap
+            val visBottom = visTop + cell - keyGap * 2
             for (c in 0 until GIF_COLS) {
                 val i = first + r * GIF_COLS + c
                 val cellLeft = contentLeft + padSide + drawW * (c.toFloat() / GIF_COLS)
@@ -1031,8 +1073,8 @@ class LightKeyboardView @JvmOverloads constructor(
         val visTop = gridBottom + keyGap
         val visBottom = visTop + rowKeyH
         val drawW = contentW - padSide * 2
-        val ids = listOf(Key.GIF_BACK, Key.GIF_PREV, Key.GIF_NEXT, Key.GIF_SEARCH)
-        val weights = listOf(1.5f, 1f, 1f, 1.5f)
+        val ids = listOf(Key.GIF_BACK, Key.GIF_PREV, Key.GIF_NEXT, Key.GIF_STARRED, Key.GIF_SEARCH)
+        val weights = listOf(1.4f, 1f, 1f, 1.2f, 1.4f)
         val total = weights.sum()
         var x = contentLeft + padSide
         for (k in ids.indices) {
@@ -1076,6 +1118,11 @@ class LightKeyboardView @JvmOverloads constructor(
      */
     private fun closeGifs() {
         listener?.onEmojiPanelClosed()
+        // Nothing animates off this page. A dozen GIFs still ticking behind a keyboard is exactly
+        // the sort of thing a phone like this exists not to do.
+        gifPanel.stopAnimations()
+        clearGifGesture()
+        showingStarred = false
         layer = Layer.LETTERS
         rebuild()
     }
@@ -1085,14 +1132,33 @@ class LightKeyboardView @JvmOverloads constructor(
         variantGlyphs = emptyList()
         clearEmojiGesture()
         gifPage = 0
+        showingStarred = false
+        refreshStarred()
         layer = Layer.GIFS
         gifPanel.open()
         rebuild()
     }
 
+    /**
+     * Switch between everything and only the starred ones.
+     *
+     * The starred view needs no network at all — it is a list this phone already holds — which is
+     * also why it is worth having on a keyboard: it is the one part of the picker that works with
+     * the radio off.
+     */
+    private fun showStarred(on: Boolean) {
+        showingStarred = on
+        gifPage = 0
+        refreshStarred()
+        if (on) gifPanel.showStarredOnly() else gifPanel.open()
+        rebuild()
+    }
+
+    private var showingStarred = false
+
     private fun gifPages(): Int {
-        val perPage = GIF_ROWS * GIF_COLS
-        return ((gifPanel.results.size + perPage - 1) / perPage).coerceAtLeast(1)
+        val perPage = (gifRows * GIF_COLS).coerceAtLeast(1)
+        return ((gifs.size + perPage - 1) / perPage).coerceAtLeast(1)
     }
 
     /**
@@ -1230,7 +1296,10 @@ class LightKeyboardView @JvmOverloads constructor(
         // back to a keyboard still showing one — after hiding it, or after a settings screen it
         // opened — means coming back to no keys. The symbols layer is deliberately not reset here:
         // somebody who switched to it before the keyboard was hidden meant to be on it.
-        if (layer == Layer.TOOLS || layer == Layer.CLIPS || layer == Layer.GIFS) layer = Layer.LETTERS
+        if (layer == Layer.TOOLS || layer == Layer.CLIPS || layer == Layer.GIFS) {
+            if (layer == Layer.GIFS) { gifPanel.stopAnimations(); clearGifGesture() }
+            layer = Layer.LETTERS
+        }
         rebuild()
     }
 
@@ -1563,23 +1632,104 @@ class LightKeyboardView @JvmOverloads constructor(
      */
     private fun drawGif(canvas: Canvas, pk: PlacedKey) {
         val gif = gifs.getOrNull(Key.gifCellIndex(pk.id)) ?: return
-        val bitmap = gifPanel.thumbnail(gif.previewUrl)
-        if (bitmap == null) {
-            // Not here yet. A hairline box says "something is coming" without the flicker of a
-            // spinner on a cell this small; the repaint when it lands replaces it.
+
+        // The animation when there is one, the still frame until then, a hairline box until that.
+        // Every cell therefore shows something from the first repaint rather than staying empty
+        // while the page fills in.
+        val movie = gifPanel.animation(gif.previewUrl)
+        val bitmap = if (movie == null) gifPanel.thumbnail(gif.previewUrl) else null
+        val srcW = when {
+            movie != null -> movie.intrinsicWidth
+            bitmap != null -> bitmap.width
+            else -> 0
+        }
+        val srcH = when {
+            movie != null -> movie.intrinsicHeight
+            bitmap != null -> bitmap.height
+            else -> 0
+        }
+        if (srcW <= 0 || srcH <= 0) {
             canvas.drawRect(pk.vis, dividerPaint)
+            drawStar(canvas, pk, gif)
             return
         }
-        val scale = maxOf(pk.vis.width() / bitmap.width, pk.vis.height() / bitmap.height)
-        val w = bitmap.width * scale
-        val h = bitmap.height * scale
+
+        // Fitted, not cropped. A cell is square and a GIF is any shape, so cropping to fill would
+        // cut the ends off every wide one — and a GIF is usually wide because the thing that makes
+        // it funny is at one end. The whole picture is drawn, letterboxed inside its square.
+        val scale = minOf(pk.vis.width() / srcW, pk.vis.height() / srcH)
+        val w = srcW * scale
+        val h = srcH * scale
         val left = pk.vis.centerX() - w / 2f
         val top = pk.vis.centerY() - h / 2f
-        canvas.save()
-        canvas.clipRect(pk.vis)
-        canvas.drawBitmap(bitmap, null, RectF(left, top, left + w, top + h), null)
-        canvas.restore()
+        if (movie != null) {
+            startIfNeeded(movie)
+            movie.setBounds(left.toInt(), top.toInt(), (left + w).toInt(), (top + h).toInt())
+            movie.draw(canvas)
+        } else if (bitmap != null) {
+            canvas.drawBitmap(bitmap, null, RectF(left, top, left + w, top + h), null)
+        }
+        drawStar(canvas, pk, gif)
     }
+
+    /**
+     * Hand a freshly decoded animation somewhere to invalidate, and set it running.
+     *
+     * A drawable with no callback cannot schedule its own next frame, so without this the first
+     * frame is all that is ever drawn — which looks exactly like the animation not having decoded.
+     * [verifyDrawable] is what makes the view accept the invalidations that come back.
+     */
+    private fun startIfNeeded(movie: Drawable) {
+        if (movie.callback !== this) movie.callback = this
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            movie is AnimatedImageDrawable && !movie.isRunning
+        ) {
+            movie.start()
+        }
+    }
+
+    /**
+     * The star in a cell's corner, drawn only once there is something under it.
+     *
+     * Filled when starred, outlined when not — the same fill-not-shape distinction the clipboard's
+     * pins use, and for the same reason: at this size a difference in silhouette is not readable.
+     */
+    private fun drawStar(canvas: Canvas, pk: PlacedKey, gif: app.lightphonekeyboard.text.Gif) {
+        val size = minOf(pk.vis.width(), pk.vis.height()) * 0.24f
+        val inset = dpf(3)
+        val left = pk.vis.right - size - inset
+        val top = pk.vis.top + inset
+        val d = iconCache.getOrPut(
+            if (gif.id in starredIds) R.drawable.ic_kb_star_on else R.drawable.ic_kb_star_off,
+        ) {
+            context.getDrawable(
+                if (gif.id in starredIds) R.drawable.ic_kb_star_on else R.drawable.ic_kb_star_off,
+            )!!
+        }
+        d.setBounds(left.toInt(), top.toInt(), (left + size).toInt(), (top + size).toInt())
+        d.draw(canvas)
+    }
+
+    /**
+     * The ids of the starred GIFs, read once per page rather than per cell.
+     *
+     * [GifPanel.starred] decodes the whole stored list, and the draw pass asks about every cell on
+     * screen — that would be a JSON parse a dozen times a frame.
+     */
+    private var starredIds: Set<String> = emptySet()
+
+    private fun refreshStarred() {
+        starredIds = gifPanel.starred().mapTo(HashSet()) { it.id }
+    }
+
+    /**
+     * Accept the invalidations a running animation sends back.
+     *
+     * [View] only honours them for drawables it recognises, and by default it recognises its own
+     * background and nothing else — so without this the animations decode, start, and never repaint.
+     */
+    override fun verifyDrawable(who: Drawable): Boolean =
+        layer == Layer.GIFS || super.verifyDrawable(who)
 
     /**
      * What the GIF page says when it has no grid to show. Every one of these is a normal state
@@ -1588,7 +1738,8 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun drawGifsEmpty(canvas: Canvas) {
         val message = when (gifPanel.state) {
             GifPanel.State.LOADING -> context.getString(R.string.gif_loading)
-            GifPanel.State.EMPTY -> context.getString(R.string.gif_none)
+            GifPanel.State.EMPTY ->
+                context.getString(if (showingStarred) R.string.gif_none_starred else R.string.gif_none)
             GifPanel.State.NO_KEY -> context.getString(R.string.gif_no_key)
             GifPanel.State.FAILED -> gifPanel.message ?: context.getString(R.string.gif_failed)
             else -> return
@@ -1724,6 +1875,7 @@ class LightKeyboardView @JvmOverloads constructor(
         Key.HAND_RESET -> R.drawable.ic_kb_expand
         Key.CLIP_BACK, Key.GIF_BACK -> R.drawable.ic_kb_chevron_down
         Key.GIF_SEARCH -> R.drawable.ic_kb_search
+        Key.GIF_STARRED -> if (showingStarred) R.drawable.ic_kb_star_on else R.drawable.ic_kb_star_off
         Key.GIF_PREV -> R.drawable.ic_kb_chevron_left
         Key.GIF_NEXT -> R.drawable.ic_kb_chevron_right
         Key.CLIP_PREV -> R.drawable.ic_kb_chevron_left
@@ -1811,6 +1963,7 @@ class LightKeyboardView @JvmOverloads constructor(
             return true
         }
         // The emoji grid scrolls, so it owns its own gestures. See [onEmojiTouch].
+        if (layer == Layer.GIFS && onGifTouch(ev)) return true
         if (layer == Layer.EMOJI && onEmojiTouch(ev)) return true
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -2201,6 +2354,105 @@ class LightKeyboardView @JvmOverloads constructor(
      *
      * Returns true when the event was the grid's, so the rest of [onTouchEvent] leaves it alone.
      */
+    /**
+     * The GIF grid's own touches: a tap inserts, a hold stars.
+     *
+     * Its own path rather than the ordinary key one because a cell has to commit on **lift**. Every
+     * other key in this view commits on touch-down, which is right for typing and impossible here:
+     * a hold cannot be told from a tap until the finger goes, and starring is the only thing a hold
+     * could mean on a page whose taps send a file into somebody's message.
+     *
+     * Second fingers are swallowed rather than passed on, for the same reason the tools and
+     * clipboard pages swallow them — nothing here is retractable.
+     */
+    private fun onGifTouch(ev: MotionEvent): Boolean {
+        if (layer != Layer.GIFS) return false
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val key = findKey(ev.x, ev.y)
+                if (key == null || !Key.isGifCell(key.id)) return false
+                gifPointerId = ev.getPointerId(0)
+                pressedGifCell = Key.gifCellIndex(key.id)
+                gifHoldFired = false
+                gifDownX = ev.x
+                gifDownY = ev.y
+                removeCallbacks(gifHold)
+                postDelayed(gifHold, SUGGESTION_HOLD_MS)
+                invalidate()
+                return true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (pressedGifCell < 0) return false
+                // A finger that wandered off the cell is not choosing it any more. The slop is a
+                // key's worth, because the cells are large and a thumb moves while it presses.
+                val dx = ev.x - gifDownX
+                val dy = ev.y - gifDownY
+                if (dx * dx + dy * dy > gifMoveSlop * gifMoveSlop) clearGifGesture()
+                return true
+            }
+
+            MotionEvent.ACTION_POINTER_DOWN -> return pressedGifCell >= 0
+
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (ev.getPointerId(ev.actionIndex) != gifPointerId) return pressedGifCell >= 0
+                return finishGifGesture()
+            }
+
+            MotionEvent.ACTION_UP -> return finishGifGesture()
+
+            MotionEvent.ACTION_CANCEL -> {
+                clearGifGesture()
+                return true
+            }
+        }
+        return false
+    }
+
+    /** The lift. Inserts unless the hold already turned this press into a star. */
+    private fun finishGifGesture(): Boolean {
+        val cell = pressedGifCell
+        val fired = gifHoldFired
+        clearGifGesture()
+        if (cell < 0 || fired) return true
+        val gif = gifs.getOrNull(cell) ?: return true
+        tap()
+        gifPanel.remember(gif)
+        listener?.onGif(gif.sendUrl, gif.label, gif.id)
+        return true
+    }
+
+    private fun clearGifGesture() {
+        removeCallbacks(gifHold)
+        if (pressedGifCell >= 0) invalidate()
+        pressedGifCell = -1
+        gifPointerId = -1
+    }
+
+    /**
+     * Held on a cell: star it, or take the star off.
+     *
+     * [gifHoldFired] is what stops the lift from also inserting it. Without that, starring a GIF
+     * would send it at the same time, which is the opposite of what somebody deciding to keep one
+     * for later is asking for.
+     */
+    private val gifHold = Runnable {
+        val gif = gifs.getOrNull(pressedGifCell) ?: return@Runnable
+        gifHoldFired = true
+        val starred = gifPanel.toggleStar(gif)
+        refreshStarred()
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        listener?.onGifStarred(starred)
+        invalidate()
+    }
+
+    private var pressedGifCell = -1
+    private var gifPointerId = -1
+    private var gifHoldFired = false
+    private var gifDownX = 0f
+    private var gifDownY = 0f
+    private val gifMoveSlop = dpf(24)
+
     private fun onEmojiTouch(ev: MotionEvent): Boolean {
         if (layer != Layer.EMOJI) return false
         when (ev.actionMasked) {
@@ -2571,6 +2823,7 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.CLIP_BLANK -> { }
             Key.GIF_BACK -> closeGifs()
             Key.GIF_SEARCH -> listener?.onGifSearch()
+            Key.GIF_STARRED -> showStarred(!showingStarred)
             Key.GIF_PREV -> { if (gifPage > 0) { gifPage--; rebuild() } }
             Key.GIF_NEXT -> { if (gifPage < gifPages() - 1) { gifPage++; rebuild() } }
             Key.EMOJI_SEARCH -> listener?.onEmojiSearch()
@@ -2598,13 +2851,9 @@ class LightKeyboardView @JvmOverloads constructor(
                 // An emoji cell commits on lift, not here — see onTouchEvent. A drag across the grid
                 // is a scroll, and committing on touch-down would insert an emoji every time.
                 if (Key.isEmojiCell(id)) return false
-                if (Key.isGifCell(id)) {
-                    gifs.getOrNull(Key.gifCellIndex(id))?.let { gif ->
-                        gifPanel.remember(gif)
-                        listener?.onGif(gif.sendUrl, gif.label, gif.id)
-                    }
-                    return false
-                }
+                // A GIF cell commits on lift, not here — see [onGifTouch]. A hold on one stars it,
+                // and neither can be told from the other until the finger goes.
+                if (Key.isGifCell(id)) return false
                 if (Key.isClipCell(id)) {
                     clips.getOrNull(Key.clipCellIndex(id))?.let { listener?.onPaste(it.text) }
                     return false
@@ -2762,9 +3011,17 @@ class LightKeyboardView @JvmOverloads constructor(
          *  the same four bands every other layer uses, so the keyboard never changes height. */
         const val CLIP_ROWS = 3
 
-        /** GIF cells on a page. Three across keeps a cell close to square at one row-pitch tall. */
-        const val GIF_ROWS = 3
+        /** Columns of GIFs. Rows are worked out from the height — see [layoutGifs]. */
         const val GIF_COLS = 3
+
+        /** Rows before a measure has happened, and the floor [gifViewHeight] is sized against. */
+        const val GIF_ROWS = 3
+
+        /** A ceiling, so a tall screen does not turn the cells into stamps. */
+        const val GIF_MAX_ROWS = 6
+
+        /** How much of the display the GIF page takes. The rest keeps the app behind it in view. */
+        const val GIF_SCREEN_FRACTION = 0.82f
 
         /** Share of the screen the keys keep when narrowed to one hand. */
         const val ONE_HANDED_FRACTION = 0.80f
