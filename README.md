@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.8.x** (tag `v1.8.<n>`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v1.9.x** (tag `v1.9.<n>`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -126,8 +126,8 @@ Optional settings, all in the app itself:
   the one view here that needs no network at all. Search [KLIPY](https://klipy.com) and drop one
   straight into the field as a picture.
   Where a field takes no images — most fields are for text, and a keyboard cannot make one accept
-  something it hasn't declared — the GIF goes on the clipboard instead and the keyboard says so, so
-  it stays a picture either way. The ones you have used lately come first. This is the only part of
+  something it hasn't declared — the GIF goes on the clipboard and the keyboard presses paste for
+  you, so it stays a picture either way. The ones you have used lately come first. This is the only part of
   the keyboard that uses the network — see **Settings → GIFs**, which says so, and where you can put
   your own KLIPY key if the shared one is busy.
 - **Searching a panel** — the emoji and GIF search keys borrow the letters, and **return runs the
@@ -292,6 +292,23 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v1.9.x** (2026-09-18) — **The keyboard presses paste for you.**
+
+  Where a field declares no image support the GIF still goes on the clipboard, and the keyboard now
+  presses paste itself rather than telling you to. "It's on the clipboard, go and paste it" is a
+  chore, not a feature.
+
+  The clip had to change for that to be safe. One holding only a `content://` URI is coerced to
+  *text* by any field that cannot take an image, so an automatic paste into a plain text box would
+  have typed `content://app.lightphonekeyboard.gifs/gifs/gif-…` into somebody's message — worse than
+  the link this whole path replaced, since it means nothing to a reader and the permission behind it
+  expires in minutes. The clip now carries an explicit empty string beside the URI: an app that
+  handles images gets the picture, an app that only pastes text gets nothing, which is the right
+  amount of nothing.
+
+  The paste is a try and stays one. There is no way to ask an app whether it will accept one and no
+  signal afterwards saying whether it did, so the clip is left on the clipboard either way.
 
 - **v1.8.x** (2026-09-18) — **The GIF page fills the screen, the GIFs move, and you can keep one.**
 
