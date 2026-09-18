@@ -19,6 +19,7 @@ object Prefs {
     private const val KEY_EMOJI_KEY = "emoji_key"
     private const val KEY_TOUCH_OFFSETS = "touch_offsets"
     private const val KEY_TOUCH_MODEL = "touch_model"
+    private const val KEY_TOUCH_MAP = "touch_map_"
     private const val KEY_LAYOUT = "key_layout"
     private const val KEY_HEIGHT = "key_height"
     private const val KEY_STRENGTH = "correction_strength"
@@ -285,6 +286,24 @@ object Prefs {
     fun setTouchModel(c: Context, value: String) {
         prefs(c).edit().putString(KEY_TOUCH_MODEL, value).commit()
     }
+
+    /** Which layers the touch map draws. Four independent toggles, all on to begin with — the page
+     *  exists to show all four, and somebody who wants one at a time can say so. */
+    fun touchMapCenter(c: Context): Boolean = mapLayer(c, "center")
+    fun touchMapCore(c: Context): Boolean = mapLayer(c, "core")
+    fun touchMapSpread(c: Context): Boolean = mapLayer(c, "spread")
+    fun touchMapCount(c: Context): Boolean = mapLayer(c, "count")
+
+    fun setTouchMapCenter(c: Context, v: Boolean) = setMapLayer(c, "center", v)
+    fun setTouchMapCore(c: Context, v: Boolean) = setMapLayer(c, "core", v)
+    fun setTouchMapSpread(c: Context, v: Boolean) = setMapLayer(c, "spread", v)
+    fun setTouchMapCount(c: Context, v: Boolean) = setMapLayer(c, "count", v)
+
+    private fun mapLayer(c: Context, name: String): Boolean =
+        prefs(c).getBoolean(KEY_TOUCH_MAP + name, true)
+
+    private fun setMapLayer(c: Context, name: String, v: Boolean) =
+        prefs(c).edit().putBoolean(KEY_TOUCH_MAP + name, v).apply()
 
     /** Throw the learned touch model away. The keyboard reloads it the next time it lays out, finds
      *  nothing, and starts again from the population prior. */

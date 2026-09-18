@@ -39,13 +39,12 @@ import kotlin.math.sqrt
  * well-aimed* tap type something else, and that users find this far worse than the errors it
  * prevents — the drawn key is a promise.
  *
- * It is measured on the **raw** offset from the drawn centre, not the offset-corrected one. Correcting
- * for where a fingertip is sensed is worth doing for an ambiguous tap near a boundary; it has no
- * business overruling a tap in the middle of a key. Measuring it on the corrected point also makes
- * the promise conditional on the learned mean staying smaller than the core, which nothing enforces:
- * a key whose mean had drifted would have had its guaranteed band slide off its own drawn centre.
- * So the division of labour is: the core is the drawn key's, and everything outside it is the
- * model's.
+ * It is measured on the offset-corrected point, so the core travels with the key's learned centre,
+ * and `LightKeyboardView.aimedAt` picks the key by that same quantity — a tap can never be inside one
+ * key's core while a different key has been chosen. Measuring it on the raw point would be a
+ * stronger-sounding promise and a worse keyboard: a typist who lands consistently low has the key
+ * below already under the finger, so the raw point anchors to it and types it for ever. [MEAN_CLAMP]
+ * is what keeps the corrected point honest, by bounding how far a centre may travel.
  *
  * Pure and Android-free so the learning rule can be tested off a device: it is passive, silent and
  * permanent, which is the worst combination to debug by feel.

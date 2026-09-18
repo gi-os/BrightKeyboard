@@ -7,8 +7,8 @@ import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
 import app.lightphonekeyboard.text.TouchModel
-import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Draws the keyboard's learned touch targets: where each key's taps really land, how far they
@@ -20,13 +20,21 @@ import kotlin.math.max
  * nobody types real messages on.
  *
  * Geometry is invented here rather than taken from the keyboard. [TouchModel] stores key units, not
- * pixels, so a picture drawn at any size is the same picture. The one thing that must match the
- * keyboard is the row *contents*, which come from [LightKeyboardView.letterRows].
+ * pixels, so a picture drawn at any size is the same picture. Two things must match the keyboard and
+ * both come from [LightKeyboardView.letterRows]: which letters are in which row, and **how many cells
+ * each row holds**. Shift and backspace live in the bottom letter row and take a cell each, so a map
+ * that drew only the letters would draw that whole row a third too wide.
  */
 class TouchMapView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
+
+    /** Which of the four layers to draw. Each is a toggle on [TouchActivity]. */
+    var showCenter = true
+    var showCore = true
+    var showSpread = true
+    var showCount = true
 
     private val white = context.getColor(R.color.white)
     private val gray = context.getColor(R.color.gray)
@@ -34,9 +42,7 @@ class TouchMapView @JvmOverloads constructor(
     private val keyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE; color = gray; alpha = 90
     }
-    private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL; color = white; alpha = 26
-    }
+    private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = white }
     private val spreadPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = white }
     private val driftPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = white }
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = white }
@@ -47,32 +53,35 @@ class TouchMapView @JvmOverloads constructor(
         color = gray; textAlign = Paint.Align.CENTER
     }
 
-    private var rows: List<String> = LightKeyboardView.letterRows(Prefs.keyLayout(context))
+    private var rows: List<List<String>> = LightKeyboardView.letterRows(Prefs.keyLayout(context))
     private val rect = RectF()
 
-    /** Re-read the layout. The map is live, so a layout changed in settings must reach it. */
+    /** Re-read the layout. The map is live, so a layout changed on another page must reach it. */
     fun refreshLayout() {
         rows = LightKeyboardView.letterRows(Prefs.keyLayout(context))
         invalidate()
     }
 
+    /** True when this layout has no per-letter model at all — the phone pad types digits. */
+    fun hasLetters(): Boolean = rows.isNotEmpty()
+
     /** What the picture adds up to, for the line of text under it. Null when there is no keyboard. */
     fun summary(): Summary? {
         val m = TouchInsight.model ?: return null
         var taps = 0f
-        var shift = 0f
-        var keys = 0
-        for (r in rows) for (c in r) {
-            val i = c - 'a'
-            if (i !in 0 until TouchModel.N) continue
-            taps += m.count(i)
-            shift += abs(m.meanX(i)) + abs(m.meanY(i))
-            keys++
+        for (r in rows) for (id in r) {
+            val i = letterIndex(id)
+            if (i >= 0) taps += m.count(i)
         }
-        return Summary(taps.toInt(), if (keys > 0) shift / (2 * keys) else 0f)
+        // drift(), not the mean offset: the offset starts at the population prior, so a model that
+        // has learned nothing would otherwise report several per cent of a key and never go lower.
+        return Summary(taps.toInt(), m.drift())
     }
 
-    class Summary(val taps: Int, val meanShift: Float)
+    class Summary(val taps: Int, val drift: Float)
+
+    private fun letterIndex(id: String): Int =
+        if (id.length == 1 && id[0] in 'a'..'z') id[0] - 'a' else -1
 
     override fun onDraw(canvas: Canvas) {
         val model = TouchInsight.model
@@ -84,13 +93,14 @@ class TouchMapView @JvmOverloads constructor(
         // The view is given whatever vertical space is left over, so the keyboard opening shrinks it
         // rather than pushing the field below it off screen. Cap the board at keyboard proportions
         // and center it, or on a tall screen the keys stretch into columns.
-        val boardH = kotlin.math.min(height.toFloat(), width * 0.46f)
+        val boardH = min(height.toFloat(), width * 0.46f)
         val top = (height - boardH) / 2f
         val rowPitch = boardH / rows.size.toFloat()
         val keyH = rowPitch - 2 * gap
-        // One width for every key, from the longest row — the same convention the model stores in,
-        // so an offset in key units means the same thing on every row.
-        val unitW = usable / max(1, rows.maxOf { it.length })
+        if (keyH <= 0f) return
+        // The model's x unit is a letter key's *visible* width on the longest row — the cell less a
+        // gap each side — so an offset in key units means the same thing on every row.
+        val unitW = max(1f, usable / max(1, rows.maxOf { it.size }) - 2 * gap)
 
         letterPaint.textSize = keyH * 0.34f
         countPaint.textSize = keyH * 0.2f
@@ -100,8 +110,10 @@ class TouchMapView @JvmOverloads constructor(
 
         for ((r, row) in rows.withIndex()) {
             if (row.isEmpty()) continue
-            val colW = usable / row.length
-            for ((c, ch) in row.withIndex()) {
+            val colW = usable / row.size
+            for ((c, id) in row.withIndex()) {
+                val i = letterIndex(id)
+                if (i < 0) continue          // shift, backspace: they hold their cell and nothing more
                 val cx = side + (c + 0.5f) * colW
                 val cy = top + r * rowPitch + rowPitch / 2f
                 val halfW = colW / 2f - gap
@@ -111,14 +123,14 @@ class TouchMapView @JvmOverloads constructor(
                 rect.set(cx - halfW, cy - halfH, cx + halfW, cy + halfH)
                 canvas.drawRoundRect(rect, dpf(3), dpf(3), keyPaint)
 
-                val i = ch - 'a'
-                if (model == null || i !in 0 until TouchModel.N) {
+                val ch = id[0]
+                if (model == null) {
                     letterPaint.alpha = 255
                     canvas.drawText(ch.uppercase(), cx, cy + letterPaint.textSize / 3f, letterPaint)
                     continue
                 }
 
-                // Everything below moves with the learned centre, because everything below is about
+                // Everything below hangs off the learned center, because everything below is about
                 // where the typist actually aims rather than where the key is painted.
                 val lx = cx + model.meanX(i) * unitW
                 val ly = cy + model.meanY(i) * rowPitch
@@ -128,35 +140,44 @@ class TouchMapView @JvmOverloads constructor(
                 val conf = (model.count(i) / TouchModel.CONFIDENCE_K).coerceIn(0f, 1f)
                 val ink = (40 + 215 * conf).toInt()
 
-                // The anchored core — this key's, whatever else the keyboard believes.
-                corePaint.alpha = (10 + 30 * conf).toInt()
-                rect.set(
-                    lx - TouchModel.ANCHOR_FRAC * halfW, ly - TouchModel.ANCHOR_FRAC * halfH,
-                    lx + TouchModel.ANCHOR_FRAC * halfW, ly + TouchModel.ANCHOR_FRAC * halfH,
-                )
-                canvas.drawRoundRect(rect, dpf(2), dpf(2), corePaint)
+                if (showCore) {
+                    corePaint.alpha = (10 + 30 * conf).toInt()
+                    rect.set(
+                        lx - TouchModel.ANCHOR_FRAC * halfW, ly - TouchModel.ANCHOR_FRAC * halfH,
+                        lx + TouchModel.ANCHOR_FRAC * halfW, ly + TouchModel.ANCHOR_FRAC * halfH,
+                    )
+                    canvas.drawRoundRect(rect, dpf(2), dpf(2), corePaint)
+                }
 
                 // Spread, drawn as the ratio to this typist's own average rather than the raw sigma:
                 // a sigma is 0.7 of a key wide and 26 of those overlap into porridge. At the ratio a
                 // typical key is exactly the size of its key, and a loose one is visibly fatter.
-                spreadPaint.alpha = (ink * 0.6f).toInt()
-                rect.set(
-                    lx - halfW * model.spreadRatioX(i), ly - halfH * model.spreadRatioY(i),
-                    lx + halfW * model.spreadRatioX(i), ly + halfH * model.spreadRatioY(i),
-                )
-                canvas.drawOval(rect, spreadPaint)
+                if (showSpread) {
+                    spreadPaint.alpha = (ink * 0.6f).toInt()
+                    rect.set(
+                        lx - halfW * model.spreadRatioX(i), ly - halfH * model.spreadRatioY(i),
+                        lx + halfW * model.spreadRatioX(i), ly + halfH * model.spreadRatioY(i),
+                    )
+                    canvas.drawOval(rect, spreadPaint)
+                }
 
-                // How far the target has travelled, and which way.
-                driftPaint.alpha = ink
-                canvas.drawLine(cx, cy, lx, ly, driftPaint)
-                dotPaint.alpha = ink
-                canvas.drawCircle(lx, ly, dpf(2), dotPaint)
+                if (showCenter) {
+                    driftPaint.alpha = ink
+                    canvas.drawLine(cx, cy, lx, ly, driftPaint)
+                    dotPaint.alpha = ink
+                    canvas.drawCircle(lx, ly, dpf(2), dotPaint)
+                }
 
+                // The letter rides with the target when the target is being shown, and sits in its
+                // key when it is not, so turning a layer off never leaves the label stranded.
+                val tx = if (showCenter) lx else cx
+                val ty = if (showCenter) ly else cy
                 letterPaint.alpha = ink
-                canvas.drawText(ch.uppercase(), lx, ly - dpf(4), letterPaint)
-                if (model.count(i) >= 1f) {
+                val drop = if (showCount && model.count(i) >= 1f) dpf(4) else -letterPaint.textSize / 3f
+                canvas.drawText(ch.uppercase(), tx, ty - drop, letterPaint)
+                if (showCount && model.count(i) >= 1f) {
                     countPaint.alpha = (ink * 0.7f).toInt()
-                    canvas.drawText(model.count(i).toInt().toString(), lx, ly + dpf(12), countPaint)
+                    canvas.drawText(model.count(i).toInt().toString(), tx, ty + dpf(12), countPaint)
                 }
             }
         }

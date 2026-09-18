@@ -142,10 +142,15 @@
     <string name="setup_touch_value">See it</string>
     <string name="touch_blurb">Where your taps for each key really land. The keyboard reads an unclear tap against this and never moves a key on screen.</string>
     <string name="touch_try">Type here to watch it move</string>
-    <string name="touch_legend">Box: the key as drawn. Line and dot: how far its target has moved, and to where. Oval: how loosely you hit it, against your own average. Number: taps counted. Faint means barely measured.</string>
-    <string name="touch_summary">%1$d taps counted. Targets have moved %2$d%% of a key on average.</string>
+    <string name="touch_layer_center">Target</string>
+    <string name="touch_layer_core">Core</string>
+    <string name="touch_layer_spread">Spread</string>
+    <string name="touch_layer_count">Taps</string>
+    <string name="touch_legend">Box: the key as drawn, which never moves. Line and dot: where your taps for it land. Shaded: the part of the key no spelling model may overrule. Oval: how loosely you hit it, against your own average. Faint means barely measured.</string>
+    <string name="touch_summary">%1$d taps counted. Targets have shifted %2$d%% of a key from where they started.</string>
     <string name="touch_empty">Nothing measured yet. Type in the field below.</string>
     <string name="touch_none">Open the keyboard below to see the live targets.</string>
+    <string name="touch_keypad">The phone pad types digits, so there is no per-letter touch model to draw. Switch to a letter layout to see one.</string>
     <string name="touch_reset">Reset touch model</string>
     <string name="touch_reset_done">Touch model reset</string>
 </resources>

@@ -19,6 +19,7 @@ import app.lightphonekeyboard.text.Clips
 import app.lightphonekeyboard.text.GestureDecoder
 import app.lightphonekeyboard.text.KeyGrid
 import app.lightphonekeyboard.text.Keypad
+import app.lightphonekeyboard.text.ModelStore
 import app.lightphonekeyboard.text.StripItem
 import app.lightphonekeyboard.text.Suggester
 import app.lightphonekeyboard.text.TouchModel
@@ -2854,6 +2855,7 @@ class LightKeyboardView @JvmOverloads constructor(
         if (saved != null) {
             touch.copyFrom(TouchModel.parse(saved, touchPrior))
             savedTouchModel = saved
+            TouchInsight.changed()
             return
         }
         val v1 = Prefs.touchOffsets(context) ?: return
@@ -2862,6 +2864,7 @@ class LightKeyboardView @JvmOverloads constructor(
         })
         Prefs.clearTouchOffsets(context)
         saveTouchModel()
+        TouchInsight.changed()
     }
 
     private var savedTouchModel: String? = null
@@ -3014,7 +3017,9 @@ class LightKeyboardView @JvmOverloads constructor(
         removeCallbacks(suggestionHold)
         // Settings can clear the stored model while this view is alive. Notice before saving, or the
         // copy in memory is written straight back over the reset the typist just asked for.
-        if (touchModelLoaded && Prefs.touchModel(context) == null) {
+        //
+        // The rule is in [ModelStore], with the sequence it goes wrong in written out as tests.
+        if (ModelStore.clearedBySettings(touchModelLoaded, savedTouchModel, Prefs.touchModel(context))) {
             touch.reset(); savedTouchModel = null; touchModelLoaded = false
         }
         saveTouchModel()   // persist what we learned in the field we're leaving
@@ -3029,7 +3034,10 @@ class LightKeyboardView @JvmOverloads constructor(
         removeCallbacks(clearFlash)
         stopBackspaceRepeat()
         saveTouchModel()
-        if (TouchInsight.model === touch) TouchInsight.model = null
+        if (TouchInsight.model === touch) {
+            TouchInsight.model = null
+            TouchInsight.changed()   // the page must stop showing a keyboard that has gone
+        }
         super.onDetachedFromWindow()
     }
 
@@ -3116,65 +3124,70 @@ class LightKeyboardView @JvmOverloads constructor(
 
     companion object {
         /**
-         * The three letter rows of a layout, as plain strings. Shared with [TouchMapView] so the
-         * picture of the targets and the keyboard they belong to cannot drift apart.
+         * The three letter rows of a layout, whole. Shared with [TouchMapView] so the picture of the
+         * targets and the keyboard they belong to cannot drift apart.
+         *
+         * The control keys come too, and they matter. Shift and backspace sit in the bottom letter
+         * row and carry the same weight as a letter, so a map that dropped them would spread seven
+         * letters across a width the keyboard gives to nine, and every key in that row, its core and
+         * its drift arrow would be drawn a third too wide. The caller skips them and keeps the space.
+         *
+         * Empty for the phone pad, which has no per-letter model at all: its keys are digits, so
+         * `letterKeys` stays empty and nothing is ever learned.
          */
-        fun letterRows(layout: String): List<String> {
-            val rows = when (layout) {
-                Prefs.LAYOUT_AZERTY -> Layout.azerty
-                Prefs.LAYOUT_QWERTZ -> Layout.qwertz
-                else -> Layout.letters
-            }
-            return rows.take(3).map { row -> row.filter { isLetterId(it) }.joinToString("") }
+        fun letterRows(layout: String): List<List<String>> = when (layout) {
+            Prefs.LAYOUT_T9 -> emptyList()
+            Prefs.LAYOUT_AZERTY -> Layout.azerty.take(3)
+            Prefs.LAYOUT_QWERTZ -> Layout.qwertz.take(3)
+            else -> Layout.letters.take(3)
         }
 
-        private fun isLetterId(id: String) = id.length == 1 && id[0] in 'a'..'z'
-
-        // ---- the rest of this companion is the view's own; a class may only have one ----
+        // ---- the rest of this companion is the view's own; a class may only have one, and only
+        // ---- letterRows above is meant to be visible outside it ----
 
         /** Clips on one page of the clipboard. Three, leaving the fourth band for the controls —
          *  the same four bands every other layer uses, so the keyboard never changes height. */
-        const val CLIP_ROWS = 3
+        private const val CLIP_ROWS = 3
 
         /** Columns of GIFs. Rows are worked out from the height — see [layoutGifs]. */
-        const val GIF_COLS = 3
+        private const val GIF_COLS = 3
 
         /** Rows before a measure has happened, and the floor [gifViewHeight] is sized against. */
-        const val GIF_ROWS = 3
+        private const val GIF_ROWS = 3
 
         /** A ceiling, so a tall screen does not turn the cells into stamps. */
-        const val GIF_MAX_ROWS = 6
+        private const val GIF_MAX_ROWS = 6
 
         /** How much of the display the GIF page takes. The rest keeps the app behind it in view. */
-        const val GIF_SCREEN_FRACTION = 0.82f
+        private const val GIF_SCREEN_FRACTION = 0.82f
 
         /** Share of the screen the keys keep when narrowed to one hand. */
-        const val ONE_HANDED_FRACTION = 0.80f
+        private const val ONE_HANDED_FRACTION = 0.80f
 
         /** How long a [flash] message stays. Long enough to read a short line, and no longer. */
-        const val FLASH_MS = 2200L
+        private const val FLASH_MS = 2200L
 
         /** Cap on recorded trace points. A word trace across this keyboard is a few dozen; the cap is
          *  a guard against a finger held down for a very long time, not a normal limit. */
         /** A traced word longer than this is not a word, it is a finger wandering. */
-        const val MAX_TRACED_DIGITS = 24
+        private const val MAX_TRACED_DIGITS = 24
 
-        const val MAX_TRACE_POINTS = 192
+        private const val MAX_TRACE_POINTS = 192
 
         /**
          * Points kept for the drawn trail. Larger than the decoder's budget because it samples much
          * more finely — a long word at speed can report several hundred positions, and the trail
          * wants all of them.
          */
-        const val MAX_TRAIL_POINTS = 640
+        private const val MAX_TRAIL_POINTS = 640
 
         /** How long the trail takes to fade after the finger lifts. */
-        const val TRAIL_FADE_MS = 170L
+        private const val TRAIL_FADE_MS = 170L
 
         /** Alpha of the trail at full strength. Dim on purpose: a bright ribbon is not LightOS. */
-        const val TRAIL_ALPHA = 150f
+        private const val TRAIL_ALPHA = 150f
 
         /** How thin and faint the tail goes, as a fraction of the head. */
-        const val TRAIL_MIN_SCALE = 0.25f
+        private const val TRAIL_MIN_SCALE = 0.25f
     }
 }
