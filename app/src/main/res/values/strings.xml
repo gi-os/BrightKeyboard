@@ -49,7 +49,7 @@
     <string name="gif_failed">Couldn\'t reach the GIF service.</string>
     <string name="gif_no_key">GIF search needs a key. Add one in Settings.</string>
     <string name="gif_insert_failed">That didn\'t go through. Try again, or pick another.</string>
-    <string name="gif_copied">GIF copied \u2014 paste it anywhere</string>
+    <string name="gif_copied">GIF copied \u2014 paste it if it didn\'t appear</string>
     <string name="gif_none_starred">Nothing starred yet. Hold a GIF to keep it.</string>
     <string name="emoji_search_short">Keep typing, then press return</string>
     <string name="setup_gifs">GIFs</string>

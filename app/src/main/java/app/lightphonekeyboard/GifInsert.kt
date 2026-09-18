@@ -28,14 +28,27 @@ import java.net.URL
  * of Android. So the honest design has two outcomes and both are normal:
  *
  *  - the field accepts `image/gif`, and it gets **the image**; or
- *  - it does not, and the image goes on the **clipboard**, with the keyboard saying so, for the user
- *    to paste wherever they meant it to go.
+ *  - it does not, and the image goes on the **clipboard** — and then the keyboard presses paste on
+ *    the user's behalf, because "it's on the clipboard, go and paste it" is a chore, not a feature.
  *
  * It used to commit the *link* in the second case. That was wrong twice over: a link is not what
  * anybody picking a GIF asked for, and it quietly turned a picture into a URL in places — a note, a
  * search box — where the URL is no use to anyone either. The clipboard keeps it a picture, and the
  * apps where sending a GIF actually makes sense (the messengers) are exactly the ones that declare
  * the type, so the first outcome is the common one.
+ *
+ * ## The clip carries an empty string on purpose
+ *
+ * A clip holding only a `content://` URI is coerced to **text** by any field that cannot take an
+ * image — `ClipData.Item.coerceToText` falls back to the URI's own string — so an automatic paste
+ * into a plain text box would type `content://app.lightphonekeyboard.gifs/gifs/gif-…` into somebody's
+ * message. That is worse than the link this change removed: it means nothing to a reader and the
+ * permission behind it expires.
+ *
+ * So the item is built with an explicit empty text beside the URI. An app that handles images reads
+ * the URI and gets the picture; an app that only pastes text coerces to `""` and gets nothing at
+ * all, which is the right amount of nothing. `ClipData.newUri` cannot express that, which is why
+ * the description and the item are built by hand here.
  *
  * Silently doing nothing is the only outcome that would be wrong, because from the user's side that
  * is a keyboard that ignored a tap.
@@ -54,7 +67,11 @@ object GifInsert {
         /** Handed to the field as an image. What should happen, and does wherever the field allows. */
         INSERTED,
 
-        /** The field takes no images, so it is on the clipboard and the user was told. */
+        /**
+         * The field declared no image support, so the GIF went on the clipboard and a paste was
+         * attempted. Whether the paste landed is not knowable — see [copyAndPaste] — so the caller
+         * says the clip is there.
+         */
         COPIED,
 
         /** Neither worked. */
@@ -98,26 +115,40 @@ object GifInsert {
             if (ok) return Result.INSERTED
             // Declared the type and then refused it, which happens. The clipboard is still there.
         }
-        return if (copyToClipboard(ctx, uri, label)) Result.COPIED else Result.FAILED
+        return if (copyAndPaste(ctx, ic, uri, label)) Result.COPIED else Result.FAILED
     }
 
     /**
-     * Put the GIF on the clipboard as an image, not as a URL.
+     * Put the GIF on the clipboard as an image, not as a URL, and then press paste.
      *
-     * [ClipData.newUri] reads the type back from the provider, so the clip's own description says
-     * `image/gif` and an app that can paste a picture pastes a picture. The system attaches the read
-     * grant to the primary clip, so the receiver can open it without anything else being arranged.
+     * The clip's description says `image/gif` and the item carries the URI, so an app that can paste
+     * a picture pastes a picture; the system attaches the read grant to the primary clip, so the
+     * receiver can open it with nothing else arranged. The empty text is deliberate — see the note
+     * on this file.
+     *
+     * The paste is a *try*. There is no way to ask an app whether it will accept one and no signal
+     * afterwards saying whether it did, so the clip is left on the clipboard either way and the
+     * keyboard says it is there. Where the paste worked that message is one line of redundancy;
+     * where it did not, it is the only thing standing between the user and a tap that did nothing.
      *
      * This does not pollute the keyboard's own clipboard history: that only records text clips.
      */
-    private fun copyToClipboard(ctx: Context, uri: Uri, label: String): Boolean = runCatching {
-        val cm = ctx.getSystemService(ClipboardManager::class.java) ?: return false
-        cm.setPrimaryClip(ClipData.newUri(ctx.contentResolver, label.ifBlank { "GIF" }, uri))
-        true
-    }.getOrElse {
-        Log.w(TAG, "could not put the GIF on the clipboard", it)
-        false
-    }
+    private fun copyAndPaste(ctx: Context, ic: InputConnection, uri: Uri, label: String): Boolean =
+        runCatching {
+            val cm = ctx.getSystemService(ClipboardManager::class.java) ?: return false
+            val clip = ClipData(
+                ClipDescription(label.ifBlank { "GIF" }, arrayOf(MIME)),
+                ClipData.Item("", null, null, uri),
+            )
+            cm.setPrimaryClip(clip)
+            // Whatever the field makes of it. A rich one inserts the picture; a plain one coerces
+            // the empty text and inserts nothing, which is the point of the empty text.
+            runCatching { ic.performContextMenuAction(android.R.id.paste) }
+            true
+        }.getOrElse {
+            Log.w(TAG, "could not put the GIF on the clipboard", it)
+            false
+        }
 
     /**
      * Tell the provider a GIF was actually used.
