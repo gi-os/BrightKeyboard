@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.6.x** (tag `v1.6.<n>`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v1.7.x** (tag `v1.7.<n>`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -121,12 +121,15 @@ Optional settings, all in the app itself:
 - **The tools page** — the tools key opens a page of five tiles: **Clipboard**, **Emoji**, **GIFs**,
   **One-handed** and **Hide keyboard**. Five things that can only be done from here, and nothing that
   is a shortcut to somewhere else.
-- **GIFs** — search [KLIPY](https://klipy.com) and drop one straight into the field. A field that
-  accepts images gets the file; one that doesn't gets the link, which is what every other keyboard
-  does and what the app on the other end usually unfurls anyway. The ones you have used lately come
-  first. This is the only part of the keyboard that uses the network — see
-  **Settings → GIFs**, which says so, and where you can put your own KLIPY key if the shared one is
-  busy.
+- **GIFs** — search [KLIPY](https://klipy.com) and drop one straight into the field as a picture.
+  Where a field takes no images — most fields are for text, and a keyboard cannot make one accept
+  something it hasn't declared — the GIF goes on the clipboard instead and the keyboard says so, so
+  it stays a picture either way. The ones you have used lately come first. This is the only part of
+  the keyboard that uses the network — see **Settings → GIFs**, which says so, and where you can put
+  your own KLIPY key if the shared one is busy.
+- **Searching a panel** — the emoji and GIF search keys borrow the letters, and **return runs the
+  search**. Letters, digits and spaces build the query, backspace edits it, and it shows in the strip
+  above the keys rather than in what you are writing. Nothing is searched until you ask.
 - **Clipboard history** (on by default) — the last two dozen things you copied, newest first, three to
   a page. Tap one to paste it. Tap the pin beside it to keep it; pinned clips survive **Clear** and
   never fall off the end. A keyboard is the one kind of app Android lets read the clipboard while
@@ -286,6 +289,26 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v1.7.x** (2026-09-18) — **A GIF goes in as a picture, and a search waits for return.**
+
+  A keyboard cannot put an image into an app that has not said it takes one: `commitContent` is the
+  only route Android offers and `EditorInfo.contentMimeTypes` is the app's answer. What could be
+  fixed is what happened when the answer was no, and committing the URL was wrong — a link is not
+  what anybody picking a GIF asked for, and in the fields that decline (a note, a search box) it is
+  no use to anyone either. It now goes on the clipboard as a real image clip, and the keyboard says
+  so. The apps where sending a GIF makes sense are the ones that declare the type, so the picture
+  path is the common one.
+
+  Saying so needed somewhere to say it. A keyboard has no dialog, a toast from one is unreliable, and
+  the field belongs to you — so a message borrows the suggestion strip for two seconds, the way a
+  search already borrows it, and gives it back.
+
+  **Search now runs on return.** Searching on every letter was wrong in both panels for different
+  reasons: the emoji grid reshuffled under your thumb while the word was still half typed, so the
+  thing you were reaching for moved, and every GIF keystroke was a network request with three of them
+  abandoned before the one that mattered. Letters, digits and spaces build the query — a space used
+  to end the search, which it cannot now, because "happy birthday" is the search people type.
 
 - **v1.6.x** (2026-09-18) — **The swipe model is on by default again, because a crash is now
   detected rather than feared.**
