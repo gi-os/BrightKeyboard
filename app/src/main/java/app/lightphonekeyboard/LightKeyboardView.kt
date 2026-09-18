@@ -665,8 +665,13 @@ class LightKeyboardView @JvmOverloads constructor(
                 Layer.TOOLS -> Layout.tools
                 Layer.EMOJI, Layer.CLIPS, Layer.GIFS -> emptyList()
             }
-            // Drop any control keys turned off in settings (mic / emoji / return); the row reflows.
-            return if (hiddenKeys.isEmpty()) rows else rows.map { row -> row.filter { it !in hiddenKeys } }
+            // Drop any control keys turned off in settings (mic / tools / return); the row reflows.
+            //
+            // Except the return key while a search is running: return is the only thing that runs
+            // one, so hiding it would let somebody type a query they could never submit. The
+            // setting is about writing, and this is not writing.
+            val hidden = if (searchQuery != null) hiddenKeys - Key.ENTER else hiddenKeys
+            return if (hidden.isEmpty()) rows else rows.map { row -> row.filter { it !in hidden } }
         }
 
     // ------------------------------------------------------------------ layout
