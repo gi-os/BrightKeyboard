@@ -18,6 +18,7 @@ object Prefs {
     private const val KEY_RETURN_KEY = "return_key"
     private const val KEY_EMOJI_KEY = "emoji_key"
     private const val KEY_TOUCH_OFFSETS = "touch_offsets"
+    private const val KEY_TOUCH_MODEL = "touch_model"
     private const val KEY_LAYOUT = "key_layout"
     private const val KEY_HEIGHT = "key_height"
     private const val KEY_STRENGTH = "correction_strength"
@@ -269,11 +270,18 @@ object Prefs {
     fun setEmojiKey(c: Context, value: Boolean) =
         prefs(c).edit().putBoolean(KEY_EMOJI_KEY, value).apply()
 
-    /** Per-row learned vertical touch offsets (px), comma-joined. Null until the keyboard has learned. */
+    /** v1: three learned vertical touch offsets in **pixels**, one per row, comma-joined. Read once
+     *  more so an existing typist's model carries over, then cleared. See TouchModel.migrateV1. */
     fun touchOffsets(c: Context): String? = prefs(c).getString(KEY_TOUCH_OFFSETS, null)
 
-    fun setTouchOffsets(c: Context, value: String) =
-        prefs(c).edit().putString(KEY_TOUCH_OFFSETS, value).apply()
+    fun clearTouchOffsets(c: Context) =
+        prefs(c).edit().remove(KEY_TOUCH_OFFSETS).apply()
+
+    /** The serialized per-key touch model (TouchModel.serialize). Null until the keyboard has learned. */
+    fun touchModel(c: Context): String? = prefs(c).getString(KEY_TOUCH_MODEL, null)
+
+    fun setTouchModel(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_TOUCH_MODEL, value).apply()
 
     /** Letter arrangement: [LAYOUT_QWERTY], [LAYOUT_AZERTY], [LAYOUT_QWERTZ] or [LAYOUT_T9]. */
     fun keyLayout(c: Context): String =

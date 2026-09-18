@@ -21,6 +21,7 @@ import app.lightphonekeyboard.text.KeyGrid
 import app.lightphonekeyboard.text.Keypad
 import app.lightphonekeyboard.text.StripItem
 import app.lightphonekeyboard.text.Suggester
+import app.lightphonekeyboard.text.TouchModel
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
@@ -421,10 +422,9 @@ class LightKeyboardView @JvmOverloads constructor(
     // Medium matches the LightOS keyboard; Short tightens the gutters and shortens the keys, Tall does
     // the opposite. The accuracy model is shared across all three: its spatial term is normalised by the
     // live key width / rowPitch (so it rescales itself), and its language term (charmodel.bin) is
-    // geometry-independent — see the "typing accuracy" section below. Only the px-stored learned vertical
-    // offsets are height-specific, so applyPrefs() resets them when the preset changes.
+    // geometry-independent — see the "typing accuracy" section below. What the typist's own taps have
+    // taught the keyboard is in key units too, so a height change no longer wipes it.
     private var compact = false                 // derived: true on Short (tighter control-key icon insets)
-    private var appliedHeight: String? = null   // last preset applyPrefs() ran for, to detect a change
     private var padTop = 0f
     private var padBottom = 0f
     private var padSide = 0f
@@ -439,14 +439,8 @@ class LightKeyboardView @JvmOverloads constructor(
      *  called on init and on every reset(), so settings changes take effect next time the keyboard opens. */
     private fun applyPrefs() {
         val height = Prefs.keyHeight(context)
-        // A height change makes the px-stored learned offsets stale, so reset them to the prior. Guarded
-        // on appliedHeight != null because the first applyPrefs() runs from init{}, before learnedBiasY /
-        // rowBiasPrior (declared lower in the file) are initialized.
-        if (appliedHeight != null && appliedHeight != height) {
-            for (i in learnedBiasY.indices) learnedBiasY[i] = rowBiasPrior[i]
-            Prefs.setTouchOffsets(context, "")
-        }
-        appliedHeight = height
+        // A height change used to throw the learned touch offsets away, because they were stored in
+        // pixels. TouchModel stores key units, so it survives one; publishKeyGrid re-bases the prior.
         compact = height == Prefs.HEIGHT_SHORT
         // Read before the metrics below, which size the suggestion strip from it.
         suggestionsOn = Prefs.suggestions(context)
@@ -663,13 +657,34 @@ class LightKeyboardView @JvmOverloads constructor(
     }
     private var stripTextSize = 0f
 
+    // Tunables. lambda scales how much context can sway a tap; the spatial widths now live per key,
+    // in [touch]. radiusFrac is how far a tap may be dragged at all.
+    private val radiusFrac = 1.5f     // only score candidates within this many key units
+    private val lambda = 1.0f
+    private val sigmaFrac = 0.72f     // size-proportional part of the population spread, in key units
+    private val sigmaAbs = dpf(11)    // fixed finger-size floor (≈1.7 mm), added in quadrature (FFitts)
+
+    // Where a fresh typist's taps are expected to land, per row, before they have typed anything:
+    // low, because a finger lands below where it aimed — you aim with the tip and the screen senses
+    // the pad ("perceived input point", Holz & Baudisch) — and by a different amount per row, since
+    // the hand meets each row at a different angle (Henze et al.). Key units, positive = lands low.
+    // [0] = top (qwerty) … [2] = bottom (zxcv). About 10 / 8 / 6 dp at the default key height, which
+    // is what the pixel version of this held; it is a starting point and nothing more, since
+    // [touch] has replaced it with the typist's own numbers within a couple of sentences.
+    private val rowMeanPrior = floatArrayOf(0.18f, 0.145f, 0.11f)
+
+    /** The per-key touch model: where this typist's taps land and how far they scatter. */
+    private val touchPrior = TouchModel.Prior(
+        FloatArray(TouchModel.N), FloatArray(TouchModel.N) { rowMeanPrior[1] }, sigmaFrac, sigmaFrac)
+    private val touch = TouchModel(touchPrior)
+
     init {
         setBackgroundColor(Color.BLACK)
         setWillNotDraw(false)
         applyPrefs()
         rebuild()
-        // Note: loadLearnedOffsets() runs in onAttachedToWindow, not here — the offset fields are
-        // declared lower in the file, so they aren't initialized yet during this init block.
+        // Note: loadTouchModel() runs in onAttachedToWindow, not here — the model is declared lower
+        // in the file, so it isn't initialized yet during this init block.
     }
 
     private val currentRows: List<List<String>>
@@ -784,6 +799,7 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun publishKeyGrid() {
         if (letterKeys.isEmpty()) return
         letterKeyW = letterKeys[0].vis.width().coerceAtLeast(1f)
+        rebasePrior()
         val positions = letterKeys.map { Triple(it.id[0], it.cx / letterKeyW, (it.cy - stripH) / rowPitch) }
         listener?.onKeyGrid(KeyGrid.of(positions))
     }
@@ -2199,6 +2215,7 @@ class LightKeyboardView @JvmOverloads constructor(
         if (start.hit.contains(x.coerceIn(0f, width - 1f), y.coerceIn(0f, height - 1f))) return
 
         tracing = true
+        touch.veto()   // the key this trace started on was never a tap, and is no evidence about one
         stopBackspaceRepeat()
         if (firstKeyRetractable) listener?.onBackspace()
         firstKeyRetractable = false
@@ -2300,11 +2317,10 @@ class LightKeyboardView @JvmOverloads constructor(
         tracedDigits.append(c)
     }
 
-    private fun averageBiasY(): Float {
-        var sum = 0f
-        for (v in learnedBiasY) sum += v
-        return sum / learnedBiasY.size
-    }
+    /** The learned vertical offset in pixels, averaged over the letters — what a swipe trace needs,
+     *  since a trace has no single key to ask. Negated: the model says where taps land, the trace
+     *  wants the correction that puts them back. */
+    private fun averageBiasY(): Float = -touch.averageMeanY() * rowPitch
 
     /**
      * Hand the finished trace to the host for decoding. [traceX]/[traceY] are passed as-is rather than
@@ -2692,17 +2708,14 @@ class LightKeyboardView @JvmOverloads constructor(
     // Per-tap key selection = spatial likelihood (Gaussian on distance) × language likelihood
     // (a character trigram model, frequency-weighted English). For an ambiguous tap near a key
     // boundary this lets context break the tie (after "th", a tap between e/r/w resolves to "e").
-    // A confident tap inside a key's core is returned directly, so deliberate taps are never
+    // A tap inside a key's anchored core is returned directly, so deliberate taps are never
     // overridden. Distances are normalised by key width / row pitch so both axes are comparable.
     //
-    // Two refinements from the touch-modelling literature:
-    //   - The spatial Gaussian width has a fixed finger-size floor (FFitts / dual-Gaussian model,
-    //     Bi/Li/Zhai CHI'13): touch scatter = a size-proportional part PLUS a ~constant ≈finger-width
-    //     part. On small keys the floor dominates, so the short compact rows widen the spatial term on
-    //     their own and let the language model carry more of the tap — no per-mode tuning needed.
-    //   - The touch point is shifted up by a *per-row* offset (the "perceived input point" parallax —
-    //     Holz & Baudisch; per-row because finger pitch varies by row, Henze et al.) that is learned
-    //     per-user from the typist's own taps (see learnOffset / rowBiasPrior).
+    // Both halves of the spatial term are per key and learned from this typist — see TouchModel, which
+    // holds where each key's taps really land and how far they scatter, and which is where the reading
+    // of the touch-modelling literature lives. The keyboard itself never moves or resizes a key: what
+    // adapts is the invisible target, which is the same bargain Apple's original soft keyboard struck.
+    // TouchModel.anchored is the floor that keeps it a bargain rather than a guess.
 
     /** Holds ln P(c3 | c1,c2) for the 27-symbol alphabet (a-z + word boundary). */
     private class CharModel(private val logp: FloatArray) {
@@ -2712,26 +2725,8 @@ class LightKeyboardView @JvmOverloads constructor(
 
     private val charModel: CharModel? by lazy { loadCharModel() }
 
-    // Tunables. lambda scales how much context can sway a tap; sigmaFrac/sigmaAbs set the spatial
-    // Gaussian width (see resolveLetter). If a particular zone reads wrong, nudge these.
-    private val biasX = 0f
-    private val coreFrac = 0.5f       // within this fraction of a key (normalised) → no override
-    private val sigmaFrac = 0.72f     // size-proportional Gaussian width, in key units
-    private val sigmaAbs = dpf(11)    // fixed finger-size floor (≈1.7 mm), added in quadrature (FFitts)
-    private val radiusFrac = 1.5f     // only score candidates within this many key units
-    private val lambda = 1.0f
-
-    // Per-row vertical touch offset (px). Fingers land low — the "perceived input point" parallax: you
-    // aim with the top of your finger but the screen senses the contact patch lower down (Holz &
-    // Baudisch). The undershoot also varies by row, since finger pitch differs top-to-bottom (Henze
-    // et al.). Negative shifts the effective point up. [0] = top (qwerty) … [2] = bottom (zxcv).
-    //
-    // (a) rowBiasPrior is the starting guess for a fresh user. (b) learnedBiasY adapts it per-user from
-    // their own taps (see learnOffset) and is persisted — the parallax offset is strongly individual
-    // (Holz & Baudisch; Weir et al.), so the personal value is where the real accuracy gain is.
-    private val rowBiasPrior = floatArrayOf(-dpf(10), -dpf(8), -dpf(6))
-    private val learnedBiasY = rowBiasPrior.copyOf()   // safe default = the prior; loadLearnedOffsets refines
-    private val offsetLearnRate = 0.06f   // EMA step per tap; slow, so a few stray taps don't sway it
+    // The tap-accuracy tunables and the touch model itself are declared ABOVE init{}, with the rest
+    // of the geometry — init calls rebuild(), which reaches rebasePrior() through publishKeyGrid().
 
     /** True while the twelve-key pad is showing. Several letter-level features are meaningless then. */
     private val keypadMode: Boolean get() = keyLayout == Prefs.LAYOUT_T9
@@ -2741,38 +2736,39 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun resolveLetter(x: Float, y: Float, raw: PlacedKey): PlacedKey {
         if (letterKeys.isEmpty()) return raw
         val result = resolveLetterTo(x, y, raw)
-        learnOffset(y, result)   // passively adapt the per-row offset from this tap
+        // Park it. Whether it becomes evidence depends on what the typist does next — see TouchModel.hold.
+        touch.hold(result.id[0] - 'a', (x - result.cx) / letterKeyW, (y - result.cy) / rowPitch)
         return result
     }
 
-    /** The spatial × language resolution; [resolveLetter] wraps it to also learn the touch offset. */
+    /** The spatial × language resolution; [resolveLetter] wraps it to also learn from the tap. */
     private fun resolveLetterTo(x: Float, y: Float, raw: PlacedKey): PlacedKey {
-        val cx = x + biasX
-        val cy = y + learnedBiasY[rowOf(raw)]
-        val kw = raw.vis.width().coerceAtLeast(1f)
-        // nearest letter key, in normalised (per-axis) distance
-        var nearest = raw
-        var nd2 = Float.MAX_VALUE
-        for (k in letterKeys) {
-            val d2 = norm2(k, cx, cy, kw)
-            if (d2 < nd2) { nd2 = d2; nearest = k }
-        }
-        if (sqrt(nd2) < coreFrac) return nearest          // confident tap — leave it alone
-        val model = charModel ?: return nearest
-        val (c1, c2) = contextSymbols()
-        // Per-axis Gaussian widths (key units): the size-proportional sigmaFrac combined in quadrature
-        // with the fixed sigmaAbs floor. The floor is a constant in px, so on the short compact rows it
-        // grows as a fraction of the row pitch — widening the vertical term and ceding more to context.
-        val twoSx2 = 2f * sigmaKeyUnits(kw).let { it * it }
-        val twoSy2 = 2f * sigmaKeyUnits(rowPitch).let { it * it }
+        // Anchoring (Gunawardana, Paek & Meek, IUI'10): a tap in the middle half of the key it landed
+        // on types that key, whatever the language model would rather have. Without a floor like this
+        // a key-target model will overrule a deliberate, well-aimed tap, and that single kind of error
+        // annoys people more than all the ones the model prevents — the drawn key is a promise.
+        // Measured after the learned offset, i.e. against where the typist believes they touched:
+        // correcting for how a fingertip is sensed is not the same as second-guessing their aim.
+        val ri = raw.id[0] - 'a'
+        val adx = (x - raw.cx) / letterKeyW - touch.meanX(ri)
+        val ady = (y - raw.cy) / rowPitch - touch.meanY(ri)
+        if (TouchModel.anchored(adx, ady,
+                raw.vis.width() / 2f / letterKeyW, raw.vis.height() / 2f / rowPitch)) return raw
+
+        val model = charModel
+        val ctx = if (model != null) contextSymbols() else null
         val radius2 = radiusFrac * radiusFrac
-        var best = nearest
+        var best = raw
         var bestScore = -Float.MAX_VALUE
         for (k in letterKeys) {
-            val dx = (k.cx - cx) / kw
-            val dy = (k.cy - cy) / rowPitch
+            val i = k.id[0] - 'a'
+            val dx = (x - k.cx) / letterKeyW
+            val dy = (y - k.cy) / rowPitch
             if (dx * dx + dy * dy > radius2) continue
-            val score = -dx * dx / twoSx2 - dy * dy / twoSy2 + lambda * model.lp(c1, c2, k.id[0] - 'a')
+            // Each key is scored against its own learned centre and its own learned width, so a key
+            // this typist hits loosely claims more ground than one they hit dead on.
+            var score = touch.logLikelihood(i, dx, dy)
+            if (model != null && ctx != null) score += lambda * model.lp(ctx.first, ctx.second, i)
             if (score > bestScore) { bestScore = score; best = k }
         }
         return best
@@ -2787,33 +2783,53 @@ class LightKeyboardView @JvmOverloads constructor(
 
     /** Which letter row a key sits in (0 = top … 2 = bottom), from its centre. */
     private fun rowOf(key: PlacedKey): Int =
-        ((key.cy - stripH - padTop) / rowPitch).toInt().coerceIn(0, learnedBiasY.size - 1)
+        ((key.cy - stripH - padTop) / rowPitch).toInt().coerceIn(0, rowMeanPrior.size - 1)
 
-    /** Passively learn the per-row vertical offset: nudge the resolved key's row toward centring this
-     *  tap. Skip taps where the language model overrode a far spatial pick (the intended position is
-     *  unreliable there), and clamp, so a few stray taps can never run the offset away. */
-    private fun learnOffset(rawY: Float, key: PlacedKey) {
-        val row = rowOf(key)
-        val delta = rawY - key.cy                                      // + if the tap landed low
-        if (abs(delta + learnedBiasY[row]) > 0.6f * rowPitch) return   // not a clean same-key tap
-        learnedBiasY[row] += offsetLearnRate * (-delta - learnedBiasY[row])
-        learnedBiasY[row] = learnedBiasY[row].coerceIn(-dpf(24), dpf(2))   // ≈3.8 mm of upward headroom
+    /**
+     * Re-base the population prior on the geometry now on screen, and move the keys that have no
+     * history of their own onto it. A key the typist has actually used keeps what it learned: the
+     * model is in key units precisely so that changing the height preset is not an amnesia event.
+     */
+    private fun rebasePrior() {
+        if (letterKeys.isEmpty()) return
+        touchPrior.sx = sigmaKeyUnits(letterKeyW)
+        touchPrior.sy = sigmaKeyUnits(rowPitch)
+        for (k in letterKeys) {
+            val i = k.id[0] - 'a'
+            if (i in 0 until TouchModel.N) touchPrior.meanY[i] = rowMeanPrior[rowOf(k)]
+        }
+        touch.syncUnseen()
     }
 
-    /** Restore the learned offsets (px), or fall back to the prior for a fresh install. */
-    private fun loadLearnedOffsets() {
-        val saved = Prefs.touchOffsets(context)?.split(",")?.mapNotNull { it.toFloatOrNull() }
-        for (i in learnedBiasY.indices) learnedBiasY[i] = saved?.getOrNull(i) ?: rowBiasPrior[i]
+    /** Restore the learned model, carrying a v1 per-row pixel model over the first time. */
+    private fun loadTouchModel() {
+        val saved = Prefs.touchModel(context)
+        if (saved != null) {
+            touch.copyFrom(TouchModel.parse(saved, touchPrior))
+            touch.syncUnseen()   // a key they have never used follows whatever the layout is now
+            savedTouchModel = touch.serialize()
+            return
+        }
+        val v1 = Prefs.touchOffsets(context)
+        if (v1 != null) {
+            touch.copyFrom(TouchModel.migrateV1(v1, touchPrior, rowPitch) { i ->
+                letterKeys.firstOrNull { it.id[0] - 'a' == i }?.let { rowOf(it) } ?: 1
+            })
+            Prefs.clearTouchOffsets(context)
+            saveTouchModel()
+        }
     }
 
-    private fun saveLearnedOffsets() {
-        Prefs.setTouchOffsets(context, learnedBiasY.joinToString(",") { it.toString() })
-    }
+    private var savedTouchModel: String? = null
 
-    private fun norm2(k: PlacedKey, cx: Float, cy: Float, kw: Float): Float {
-        val dx = (k.cx - cx) / kw
-        val dy = (k.cy - cy) / rowPitch
-        return dx * dx + dy * dy
+    /** reset() runs on every field the typist moves to, so this is called far more often than the
+     *  model actually changes; writing a kilobyte of prefs each time would be for nothing. */
+    private fun saveTouchModel() {
+        touch.flush()   // a tap the typist left standing when they closed the field was accepted
+        val s = touch.serialize()
+        if (s == savedTouchModel) return
+        savedTouchModel = s
+        Prefs.setTouchModel(context, s)
     }
 
     /** The two symbols before the cursor (a-z → 0..25, anything else / absent → boundary). */
@@ -2842,6 +2858,10 @@ class LightKeyboardView @JvmOverloads constructor(
     /** Applies a key. Returns true if it committed a single retractable character (text or space). */
     private fun onKey(id: String): Boolean {
         tap()
+        // The parked tap's verdict. A delete says the last letter was not the one meant, so it must
+        // not teach the model anything; any other key means the typist moved on and left it alone.
+        // Letters are already parked by resolveLetter, whose hold() folds in whatever came before.
+        if (id == Key.BACKSPACE) touch.veto() else if (!isLetter(id)) touch.flush()
         if (id != Key.SPACE) lastSpaceTapMs = 0L   // any other key breaks a pending double-space
         when (id) {
             Key.SHIFT -> { onShift(); rebuild() }
@@ -2946,7 +2966,7 @@ class LightKeyboardView @JvmOverloads constructor(
         pressedSuggestion = -1
         suggestionForgotten = false
         removeCallbacks(suggestionHold)
-        saveLearnedOffsets()   // persist what we learned in the field we're leaving
+        saveTouchModel()   // persist what we learned in the field we're leaving
         applyPrefs()
         // Number / phone / date fields open straight on the symbols layer (its top row is 1-0).
         layer = if (numeric) Layer.SYMBOLS else Layer.LETTERS
@@ -2956,13 +2976,13 @@ class LightKeyboardView @JvmOverloads constructor(
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        loadLearnedOffsets()   // safe here: construction is complete, so the offset fields exist
+        loadTouchModel()   // safe here: construction is complete, so the model field exists
     }
 
     override fun onDetachedFromWindow() {
         removeCallbacks(clearFlash)
         stopBackspaceRepeat()
-        saveLearnedOffsets()
+        saveTouchModel()
         super.onDetachedFromWindow()
     }
 
