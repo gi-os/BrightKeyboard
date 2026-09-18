@@ -704,6 +704,10 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      *  or digit, so a double space at line start or after punctuation just stays two spaces. The IME
      *  owns the text, so the rewrite happens here; the view only detects the double tap. */
     override fun onDoubleSpace() {
+        // Mid-search the second space is just a second space, and a query holds no double spaces.
+        // Before this, a quick double tap while typing "happy birthday" ended the search, discarded
+        // everything typed, committed nothing, and said nothing.
+        if (searchingPanel) return
         if (searchingPanel) { endPanelSearch(); return }
         val ic = currentInputConnection ?: return
         clearUndo()
@@ -857,13 +861,14 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     // default). Our keyboard is built for the compact LightOS layout, so keep it docked at the bottom.
     override fun onEvaluateFullscreenMode(): Boolean = false
 
-    // ------------------------------------------------------------------ emoji search
+    // ------------------------------------------------------------------ panel search
     //
-    // The keyboard has no text field of its own and no room for one, so search borrows the field the
-    // user is already typing into. Tapping the search key leaves the panel for the letters and starts
-    // a query; every letter after that goes into the query instead of into the document, and the
-    // panel comes back the moment there is something to show. Backspace shortens the query, and
-    // anything else — space, enter, a tapped result — ends the search.
+    // The keyboard has no text field of its own and no room for one, so a search borrows the letter
+    // keys. Tapping the search key on the emoji or GIF page leaves the panel for the letters and
+    // starts a query; letters, digits and spaces go into it instead of into the document, backspace
+    // shortens it, and **return runs it** and brings the panel back with the results. Backspacing to
+    // empty, a space against an empty query, punctuation, a layer key, the mic or leaving the panel
+    // all end it without searching.
     //
     // Borrowing rather than inserting matters: a half-typed query must never reach the document. The
     // query lives here and nowhere else, and nothing is committed until a result is tapped.
@@ -945,6 +950,15 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     private fun submitPanelSearch() {
         val q = panelQuery?.toString().orEmpty().trim()
         val kind = searchKind
+        // The emoji index cannot answer a one-letter query — it would return nothing, and a panel
+        // showing nothing with no message reads as broken. Said here rather than silently refused,
+        // because the user pressed return and is owed an answer.
+        if (kind == SearchKind.EMOJI && q.isNotEmpty() &&
+            q.length < app.lightphonekeyboard.text.Emoji.MIN_QUERY
+        ) {
+            keyboard?.flashOverSearch(getString(R.string.emoji_search_short))
+            return
+        }
         endPanelSearch()
         val kb = keyboard ?: return
         if (q.isEmpty()) {
@@ -977,7 +991,11 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         val c = s[0]
         // A leading space is nothing, and two in a row are a typo; neither belongs in a query.
         if (c == ' ') {
-            if (q.isNotEmpty() && !q.endsWith(' ')) { q.append(' '); refreshPanelSearch() }
+            // Nothing typed yet, so there is no query for a space to join. It ends the search and
+            // reaches the document, which is the escape hatch somebody who opened the panel by
+            // mistake reaches for. A doubled space is dropped: a query holds no double spaces.
+            if (q.isEmpty()) { endPanelSearch(); return false }
+            if (!q.endsWith(' ')) { q.append(' '); refreshPanelSearch() }
             return true
         }
         if (c.isLetterOrDigit()) {
@@ -991,6 +1009,10 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
 
     override fun onMic() {
         if (!Prefs.voiceEnabled(this)) return   // mic key is hidden when voice is off, but guard anyway
+        // Dictation commits straight to the field and the strip is hidden while it listens, so a
+        // search left running would come back invisible, with every letter after it feeding a query
+        // instead of the document.
+        if (searchingPanel) endPanelSearch()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             // An IME can't pop the permission dialog itself; the shim activity does it.
             startActivity(Intent(this, MicPermissionActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

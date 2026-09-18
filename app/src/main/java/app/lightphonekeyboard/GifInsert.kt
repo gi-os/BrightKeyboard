@@ -150,7 +150,13 @@ object GifInsert {
         // the name is what the reuse check trusts, and two colliding URLs would silently insert
         // the wrong GIF, forever, because the bad file is then cached.
         val file = File(dir, name(url))
-        if (file.isFile && file.length() > 0L) return@runCatching file
+        if (file.isFile && file.length() > 0L) {
+            // Touched, so reuse counts as use. [prune] drops the oldest first, and a clip on the
+            // clipboard may be pasted hours later — a file that kept its original date could be
+            // swept away while the clip still points at it, and the paste would open nothing.
+            file.setLastModified(System.currentTimeMillis())
+            return@runCatching file
+        }
         // Pruned only once the reuse check has passed, or the sweep could delete the very file it
         // was about to hand back — and, worse, one whose read grant another app is still holding.
         prune(dir)
@@ -199,7 +205,14 @@ object GifInsert {
         return sb.append(".gif").toString()
     }
 
-    /** Keep the directory small. Oldest first, because the newest is the one about to be reused. */
+    /**
+     * Keep the directory small, oldest first.
+     *
+     * Not a guarantee for the clipboard: a clip can be pasted long after the file behind it was
+     * swept, and the system may clear the whole cache under storage pressure whatever this does.
+     * Touching a file on reuse ([download]) makes the ones in play the last to go, which is as far
+     * as a cache can be trusted.
+     */
     private fun prune(dir: File) {
         val files = dir.listFiles()?.sortedBy { it.lastModified() } ?: return
         var bytes = files.sumOf { it.length() }

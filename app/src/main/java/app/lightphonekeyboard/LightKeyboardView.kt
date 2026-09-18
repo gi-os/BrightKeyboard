@@ -467,6 +467,12 @@ class LightKeyboardView @JvmOverloads constructor(
         // the better. Off by default for the same reason.
         stripTextSize = spf(if (compact) 11 else 12)
         stripFullH = dpf(if (compact) 20 else 24)
+        // Dropped before the height is worked out, not after. A message still on screen when the
+        // field changes would otherwise count towards stripShowing, win the strip a full height,
+        // and then be nulled out — leaving an empty band above the keys until the next field, and
+        // handing a working suggestion strip to somebody who had switched it off.
+        removeCallbacks(clearFlash)
+        flashMessage = null
         stripH = if (stripShowing) stripFullH else 0f
 
         // An overlay or a half-finished emoji gesture must not survive a new field. The picker is
@@ -474,8 +480,6 @@ class LightKeyboardView @JvmOverloads constructor(
         // to letters paints a black band over the second key row that nothing can clear.
         variantGlyphs = emptyList()
         clearEmojiGesture()
-        removeCallbacks(clearFlash)
-        flashMessage = null
         keyLayout = Prefs.keyLayout(context)
         autoPeriod = Prefs.autoPeriod(context)
         swipeTyping = Prefs.swipeTyping(context)
@@ -633,10 +637,14 @@ class LightKeyboardView @JvmOverloads constructor(
     /** A line the keyboard is showing for a moment. Null the rest of the time. See [flash]. */
     private var flashMessage: String? = null
 
+    /** Whether this message may cover a running search's query. See [flashOverSearch]. */
+    private var flashOverSearch = false
+
     private val clearFlash = Runnable {
         if (flashMessage == null) return@Runnable
         val wasShowing = stripShowing
         flashMessage = null
+        flashOverSearch = false
         stripH = if (stripShowing) stripFullH else 0f
         if (wasShowing != stripShowing) rebuild() else invalidate()
     }
@@ -1092,7 +1100,7 @@ class LightKeyboardView @JvmOverloads constructor(
      *
      * The alternative is what this replaced: the keyboard goes back to letters and nothing happens,
      * ever, which from the user's side is a tap the keyboard ignored. [GifInsert] falls back to the
-     * link before it reports a failure at all, so reaching here means even that did not land.
+     * clipboard before it reports a failure at all, so reaching here means even that did not land.
      */
     fun gifInsertFailed() {
         gifPanel.failed(context.getString(R.string.gif_insert_failed))
@@ -1247,13 +1255,19 @@ class LightKeyboardView @JvmOverloads constructor(
         searchHint = hint
         if (searchQuery == query) return
         val wasShowing = stripShowing
+        // Starting or ending a search changes which keys are laid out, not just whether the strip is
+        // there: the return key is kept for as long as one is running, because return is the only
+        // thing that runs it. Rebuilding only when the strip's height flips missed that entirely
+        // whenever the strip was already up — leaving somebody with the return key switched off
+        // typing a query that no key on screen could submit.
+        val searchFlipped = (searchQuery == null) != (query == null)
         searchQuery = query
         // The strip has to appear for the query even when it is switched off, and go away again
         // afterwards. Recomputed here rather than left to applyPrefs, which only runs on reset() —
         // so for the default user, whose strip is off, the query was invisible and they were
         // searching blind, which is the one thing keeping the query out of the document requires.
         stripH = if (stripShowing) stripFullH else 0f
-        if (wasShowing != stripShowing) rebuild() else invalidate()
+        if (wasShowing != stripShowing || searchFlipped) rebuild() else invalidate()
     }
 
     private var searchQuery: String? = null
@@ -1278,10 +1292,22 @@ class LightKeyboardView @JvmOverloads constructor(
      * Used when a GIF could not be handed to the field and went to the clipboard instead. Without
      * it that is a tap with no visible result, which reads as a keyboard that ignored you.
      */
-    fun flash(message: String) {
+    /**
+     * Say something *about* the search that is running, in place of the query.
+     *
+     * The ordinary [flash] refuses to cover a live query, because hiding what somebody is typing is
+     * the one thing this surface must not do. This is the exception: the message is the answer to
+     * the return they just pressed, so there is nothing more useful the strip could be showing.
+     */
+    fun flashOverSearch(message: String) {
+        flash(message, overSearch = true)
+    }
+
+    fun flash(message: String, overSearch: Boolean = false) {
         removeCallbacks(clearFlash)
         val wasShowing = stripShowing
         flashMessage = message
+        flashOverSearch = overSearch
         stripH = if (stripShowing) stripFullH else 0f
         if (wasShowing != stripShowing) rebuild() else invalidate()
         postDelayed(clearFlash, FLASH_MS)
@@ -1343,12 +1369,14 @@ class LightKeyboardView @JvmOverloads constructor(
      * as soon as a word became suggestible. Its height is fixed for as long as the setting is on.
      */
     private fun drawStrip(canvas: Canvas) {
-        // A message outranks everything: it is here for two seconds and it is the only thing the
-        // keyboard has to say.
-        flashMessage?.let { message ->
+        // A query outranks a message. The query is the only place the user can see what they are
+        // typing — it is deliberately not in the document — so covering it for two seconds is the
+        // one thing this surface must not do. A message that arrives mid-search is dropped.
+        val message = if (searchQuery == null || flashOverSearch) flashMessage else null
+        message?.let {
             textPaint.textSize = stripTextSize
             val baseline = stripH / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
-            canvas.drawText(fitToWidth(message, width - dpf(20)), width / 2f, baseline, textPaint)
+            canvas.drawText(fitToWidth(it, width - dpf(20)), width / 2f, baseline, textPaint)
             return
         }
         // While a search is running the strip is the only place the query can be read, because the
@@ -2546,9 +2574,12 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.GIF_PREV -> { if (gifPage > 0) { gifPage--; rebuild() } }
             Key.GIF_NEXT -> { if (gifPage < gifPages() - 1) { gifPage++; rebuild() } }
             Key.EMOJI_SEARCH -> listener?.onEmojiSearch()
-            Key.SYMBOLS -> { layer = Layer.SYMBOLS; rebuild() }
-            Key.MORE -> { layer = Layer.MORE; rebuild() }
-            Key.LETTERS -> { layer = Layer.LETTERS; rebuild() }
+            // A layer key is handled here and never reaches the host, so the host has to be told
+            // that the search is over — otherwise tapping 123 to type a number feeds the digits to
+            // an invisible query instead of the document.
+            Key.SYMBOLS -> { endSearchIfRunning(); layer = Layer.SYMBOLS; rebuild() }
+            Key.MORE -> { endSearchIfRunning(); layer = Layer.MORE; rebuild() }
+            Key.LETTERS -> { endSearchIfRunning(); layer = Layer.LETTERS; rebuild() }
             Key.MIC -> listener?.onMic()
             Key.GLOBE -> listener?.onSwitchInput()
             Key.SPACE -> {
@@ -2597,6 +2628,11 @@ class LightKeyboardView @JvmOverloads constructor(
         return false
     }
 
+    /** Leaving the letters ends a borrowed-keys search; [Listener.onEmojiPanelClosed] owns that. */
+    private fun endSearchIfRunning() {
+        if (searchQuery != null) listener?.onEmojiPanelClosed()
+    }
+
     /** Shift tap: toggles one-shot uppercase; a quick double-tap latches caps lock; tapping while
      *  locked clears it. */
     private fun onShift() {
@@ -2634,6 +2670,7 @@ class LightKeyboardView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        removeCallbacks(clearFlash)
         stopBackspaceRepeat()
         saveLearnedOffsets()
         super.onDetachedFromWindow()
