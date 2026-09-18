@@ -25,8 +25,20 @@ object TouchInsight {
     /** Set by [TouchActivity] while it is on screen. */
     var onChange: (() -> Unit)? = null
 
+    /** Set by [LightKeyboardView] while it is attached. */
+    var onRefresh: (() -> Unit)? = null
+
     /** The keyboard saying a tap has just moved something. */
     fun changed() {
         onChange?.invoke()
+    }
+
+    /**
+     * The settings page saying a toggle moved. The keyboard caches these prefs with the rest, in
+     * applyPrefs, which only runs when a field changes — and the field the typist is looking at is
+     * the one on the settings page, so without this a toggle would do nothing until they left it.
+     */
+    fun refresh() {
+        onRefresh?.invoke()
     }
 }

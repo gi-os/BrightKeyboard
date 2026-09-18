@@ -9,22 +9,23 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import app.lightphonekeyboard.text.TouchModel
 
 /**
- * The learned touch targets, drawn, with a field to type in so they can be watched moving.
+ * The controls for the touch overlay, over a field that opens the keyboard it draws on.
  *
  * The keyboard adapts silently and keeps what it learns for good, which is the right behavior and an
  * awkward one: there is nothing to look at, and no way to tell a keyboard that has learned your hand
- * from one that has quietly gone wrong. This page is the answer to both. It is also where the reset
- * lives, because the picture is what tells somebody whether they want it.
+ * from one that has quietly gone wrong. Turning the overlay on is the answer, and this is where it
+ * is turned on, explained, and cleared.
  *
- * Live, not a snapshot. The keyboard and this screen are one process on one thread, so
- * [TouchInsight] hands over the keyboard's own model and the map redraws on every tap. A snapshot
- * would have been simpler and would have shown a picture that is always one field behind.
+ * There is no picture on this page. There was, and it was wrong twice: a diagram has to invent a
+ * keyboard to draw on, and then it has to share a screen with the real one. The keys below are the
+ * picture. Type in the field and they fill in under your thumb, because the overlay reads the
+ * keyboard's own live model rather than a copy of it.
  */
 class TouchActivity : AppCompatActivity() {
 
-    private lateinit var map: TouchMapView
     private lateinit var summary: TextView
     private lateinit var resetRow: TextView
 
@@ -61,43 +62,44 @@ class TouchActivity : AppCompatActivity() {
         root.addView(label(getString(R.string.touch_title), 28f, R.color.white))
         root.addView(label(getString(R.string.touch_blurb), 15f, R.color.gray))
 
-        // Weighted, so it is the map that gives up room when the keyboard opens. Everything below it
-        // keeps its place, which matters: the field is what makes the picture move.
-        map = TouchMapView(this).apply {
-            showCenter = Prefs.touchMapCenter(this@TouchActivity)
-            showCore = Prefs.touchMapCore(this@TouchActivity)
-            showSpread = Prefs.touchMapSpread(this@TouchActivity)
-            showCount = Prefs.touchMapCount(this@TouchActivity)
-        }
-        root.addView(map, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(
+            LightToggle(this).apply {
+                setText(getString(R.string.touch_overlay))
+                isChecked = Prefs.touchOverlay(this@TouchActivity)
+                setOnCheckedChangeListener { on ->
+                    Prefs.setTouchOverlay(this@TouchActivity, on)
+                    TouchInsight.refresh()
+                }
+            },
+        )
 
         // Four layers, four chips. On a page whose whole job is showing four things at once, four
-        // full toggle rows would cost more height than the picture they control.
+        // full toggle rows would cost more height than the keyboard they control.
         root.addView(
             LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 setPadding(0, pad / 3, 0, pad / 3)
-                addView(chip(R.string.touch_layer_center, map.showCenter) {
-                    map.showCenter = it; Prefs.setTouchMapCenter(this@TouchActivity, it)
+                addView(chip(R.string.touch_layer_center, Prefs.touchMapCenter(this@TouchActivity)) {
+                    Prefs.setTouchMapCenter(this@TouchActivity, it)
                 })
-                addView(chip(R.string.touch_layer_core, map.showCore) {
-                    map.showCore = it; Prefs.setTouchMapCore(this@TouchActivity, it)
+                addView(chip(R.string.touch_layer_core, Prefs.touchMapCore(this@TouchActivity)) {
+                    Prefs.setTouchMapCore(this@TouchActivity, it)
                 })
-                addView(chip(R.string.touch_layer_spread, map.showSpread) {
-                    map.showSpread = it; Prefs.setTouchMapSpread(this@TouchActivity, it)
+                addView(chip(R.string.touch_layer_spread, Prefs.touchMapSpread(this@TouchActivity)) {
+                    Prefs.setTouchMapSpread(this@TouchActivity, it)
                 })
-                addView(chip(R.string.touch_layer_count, map.showCount) {
-                    map.showCount = it; Prefs.setTouchMapCount(this@TouchActivity, it)
+                addView(chip(R.string.touch_layer_count, Prefs.touchMapCount(this@TouchActivity)) {
+                    Prefs.setTouchMapCount(this@TouchActivity, it)
                 })
             },
         )
 
+        root.addView(label(getString(R.string.touch_legend), 13f, R.color.gray))
         summary = label("", 14f, R.color.gray)
         root.addView(summary)
-        root.addView(label(getString(R.string.touch_legend), 13f, R.color.gray))
 
-        // Typing here is what moves the picture. Last of the content, so the keyboard covers nothing
-        // above it; the window resizes rather than pans, so the map stays on screen while you type.
+        // Typing here is what fills the overlay in. Last of the content, so the keyboard covers
+        // nothing above it, and the window resizes rather than pans.
         root.addView(
             EditText(this).apply {
                 hint = getString(R.string.touch_try)
@@ -141,7 +143,7 @@ class TouchActivity : AppCompatActivity() {
                 on = !on
                 paint()
                 onToggle(on)
-                map.invalidate()
+                TouchInsight.refresh()
             }
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 .apply { marginEnd = padV }
@@ -155,13 +157,12 @@ class TouchActivity : AppCompatActivity() {
         Prefs.clearTouchModel(this)
         wasReset = true
         resetRow.text = getString(R.string.touch_reset_done)
-        map.invalidate()
+        TouchInsight.refresh()
         updateSummary()
     }
 
     override fun onStart() {
         super.onStart()
-        map.refreshLayout()   // the layout can have been changed on another settings page
         val l = { onModelChanged() }
         listener = l
         TouchInsight.onChange = l
@@ -178,22 +179,26 @@ class TouchActivity : AppCompatActivity() {
     }
 
     private fun onModelChanged() {
-        // The field above the button refills the map, so the button has to become a button again.
+        // The field above the button refills the model, so the button has to become a button again.
         if (wasReset) {
             wasReset = false
             resetRow.text = getString(R.string.touch_reset)
         }
-        map.invalidate()
         updateSummary()
     }
 
     private fun updateSummary() {
-        val s = map.summary()
+        val model = TouchInsight.model
+        val keypad = Prefs.keyLayout(this) == Prefs.LAYOUT_T9
+        var taps = 0
+        if (model != null) for (i in 0 until TouchModel.N) taps += model.count(i).toInt()
         summary.text = when {
-            !map.hasLetters() -> getString(R.string.touch_keypad)
-            s == null -> getString(R.string.touch_none)
-            s.taps == 0 -> getString(R.string.touch_empty)
-            else -> getString(R.string.touch_summary, s.taps, (s.drift * 100).toInt())
+            keypad -> getString(R.string.touch_keypad)
+            model == null -> getString(R.string.touch_none)
+            taps == 0 -> getString(R.string.touch_empty)
+            // drift(), not the mean offset: the offset starts at the population prior, so a model
+            // that has learned nothing would report several per cent and never read lower.
+            else -> getString(R.string.touch_summary, taps, (model.drift() * 100).toInt())
         }
     }
 }

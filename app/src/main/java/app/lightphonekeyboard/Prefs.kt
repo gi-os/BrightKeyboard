@@ -20,6 +20,7 @@ object Prefs {
     private const val KEY_TOUCH_OFFSETS = "touch_offsets"
     private const val KEY_TOUCH_MODEL = "touch_model"
     private const val KEY_TOUCH_MAP = "touch_map_"
+    private const val KEY_TOUCH_OVERLAY = "touch_overlay"
     private const val KEY_LAYOUT = "key_layout"
     private const val KEY_HEIGHT = "key_height"
     private const val KEY_STRENGTH = "correction_strength"
@@ -286,6 +287,13 @@ object Prefs {
     fun setTouchModel(c: Context, value: String) {
         prefs(c).edit().putString(KEY_TOUCH_MODEL, value).commit()
     }
+
+    /** Draw the learned targets over the keys as you type. Off by default: it is there to be looked
+     *  at deliberately, and a keyboard covered in diagnostics is not one you write messages on. */
+    fun touchOverlay(c: Context): Boolean = prefs(c).getBoolean(KEY_TOUCH_OVERLAY, false)
+
+    fun setTouchOverlay(c: Context, v: Boolean) =
+        prefs(c).edit().putBoolean(KEY_TOUCH_OVERLAY, v).apply()
 
     /** Which layers the touch map draws. Four independent toggles, all on to begin with — the page
      *  exists to show all four, and somebody who wants one at a time can say so. */

@@ -360,6 +360,11 @@ class LightKeyboardView @JvmOverloads constructor(
     private var keyLayout = Prefs.LAYOUT_QWERTY
     private var autoPeriod = true
     private var swipeTyping = true
+
+    // Drawing the learned targets over the keys. Read in applyPrefs, so it follows the typist back
+    // from the settings page on the next field rather than needing the keyboard restarted.
+    private var touchOverlay = false
+    private var touchLayers = TouchOverlay.Layers(true, true, true, true)
     private var haptics = true
     private var suggestionsOn = false
     private var oneHanded = Prefs.HAND_OFF
@@ -488,6 +493,8 @@ class LightKeyboardView @JvmOverloads constructor(
         keyLayout = Prefs.keyLayout(context)
         autoPeriod = Prefs.autoPeriod(context)
         swipeTyping = Prefs.swipeTyping(context)
+        touchOverlay = Prefs.touchOverlay(context)
+        touchLayers = TouchOverlay.Layers.from(context)
         haptics = Prefs.haptics(context)
         hiddenKeys.clear()
         if (!Prefs.voiceEnabled(context)) hiddenKeys.add(Key.MIC)
@@ -1453,7 +1460,29 @@ class LightKeyboardView @JvmOverloads constructor(
         if (layer == Layer.CLIPS && clips.isEmpty()) drawClipsEmpty(canvas)
         if (layer == Layer.GIFS && gifs.isEmpty()) drawGifsEmpty(canvas)
         if (stripH > 0f) drawStrip(canvas)
+        drawTouchOverlay(canvas)
         if (tracing || trailFadeFrom != 0L) drawTrail(canvas)
+    }
+
+    /**
+     * Paint the learned targets over the letters, when the typist has asked to see them.
+     *
+     * Over the keys rather than beside them: the keyboard is the only thing on the phone with the
+     * right geometry to explain itself on, and a diagram of a keyboard has to share a screen with the
+     * keyboard. Drawn after the keys and before the swipe trail, so a trace stays readable on top.
+     */
+    private fun drawTouchOverlay(canvas: Canvas) {
+        if (!touchOverlay || layer != Layer.LETTERS || keypadMode || letterKeys.isEmpty()) return
+        if (!touchModelLoaded) return
+        val cells = letterKeys.map {
+            TouchOverlay.Cell(
+                it.id[0], it.cx, it.cy, it.vis.width() / 2f, it.vis.height() / 2f,
+            )
+        }
+        TouchOverlay.draw(
+            canvas, cells, touch, touchLayers, letterKeyW, rowPitch,
+            resources.displayMetrics.density, Color.WHITE,
+        )
     }
 
     /**
@@ -2851,6 +2880,11 @@ class LightKeyboardView @JvmOverloads constructor(
         if (touchModelLoaded || letterKeys.isEmpty()) return
         touchModelLoaded = true
         TouchInsight.model = touch   // lend it to the settings screen that draws it
+        TouchInsight.onRefresh = {
+            touchOverlay = Prefs.touchOverlay(context)
+            touchLayers = TouchOverlay.Layers.from(context)
+            invalidate()
+        }
         val saved = Prefs.touchModel(context)
         if (saved != null) {
             touch.copyFrom(TouchModel.parse(saved, touchPrior))
@@ -3036,6 +3070,7 @@ class LightKeyboardView @JvmOverloads constructor(
         saveTouchModel()
         if (TouchInsight.model === touch) {
             TouchInsight.model = null
+            TouchInsight.onRefresh = null
             TouchInsight.changed()   // the page must stop showing a keyboard that has gone
         }
         super.onDetachedFromWindow()
@@ -3122,72 +3157,51 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun spf(v: Int): Float =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v.toFloat(), resources.displayMetrics)
 
-    companion object {
-        /**
-         * The three letter rows of a layout, whole. Shared with [TouchMapView] so the picture of the
-         * targets and the keyboard they belong to cannot drift apart.
-         *
-         * The control keys come too, and they matter. Shift and backspace sit in the bottom letter
-         * row and carry the same weight as a letter, so a map that dropped them would spread seven
-         * letters across a width the keyboard gives to nine, and every key in that row, its core and
-         * its drift arrow would be drawn a third too wide. The caller skips them and keeps the space.
-         *
-         * Empty for the phone pad, which has no per-letter model at all: its keys are digits, so
-         * `letterKeys` stays empty and nothing is ever learned.
-         */
-        fun letterRows(layout: String): List<List<String>> = when (layout) {
-            Prefs.LAYOUT_T9 -> emptyList()
-            Prefs.LAYOUT_AZERTY -> Layout.azerty.take(3)
-            Prefs.LAYOUT_QWERTZ -> Layout.qwertz.take(3)
-            else -> Layout.letters.take(3)
-        }
-
-        // ---- the rest of this companion is the view's own; a class may only have one, and only
-        // ---- letterRows above is meant to be visible outside it ----
+    private companion object {
 
         /** Clips on one page of the clipboard. Three, leaving the fourth band for the controls —
          *  the same four bands every other layer uses, so the keyboard never changes height. */
-        private const val CLIP_ROWS = 3
+        const val CLIP_ROWS = 3
 
         /** Columns of GIFs. Rows are worked out from the height — see [layoutGifs]. */
-        private const val GIF_COLS = 3
+        const val GIF_COLS = 3
 
         /** Rows before a measure has happened, and the floor [gifViewHeight] is sized against. */
-        private const val GIF_ROWS = 3
+        const val GIF_ROWS = 3
 
         /** A ceiling, so a tall screen does not turn the cells into stamps. */
-        private const val GIF_MAX_ROWS = 6
+        const val GIF_MAX_ROWS = 6
 
         /** How much of the display the GIF page takes. The rest keeps the app behind it in view. */
-        private const val GIF_SCREEN_FRACTION = 0.82f
+        const val GIF_SCREEN_FRACTION = 0.82f
 
         /** Share of the screen the keys keep when narrowed to one hand. */
-        private const val ONE_HANDED_FRACTION = 0.80f
+        const val ONE_HANDED_FRACTION = 0.80f
 
         /** How long a [flash] message stays. Long enough to read a short line, and no longer. */
-        private const val FLASH_MS = 2200L
+        const val FLASH_MS = 2200L
 
         /** Cap on recorded trace points. A word trace across this keyboard is a few dozen; the cap is
          *  a guard against a finger held down for a very long time, not a normal limit. */
         /** A traced word longer than this is not a word, it is a finger wandering. */
-        private const val MAX_TRACED_DIGITS = 24
+        const val MAX_TRACED_DIGITS = 24
 
-        private const val MAX_TRACE_POINTS = 192
+        const val MAX_TRACE_POINTS = 192
 
         /**
          * Points kept for the drawn trail. Larger than the decoder's budget because it samples much
          * more finely — a long word at speed can report several hundred positions, and the trail
          * wants all of them.
          */
-        private const val MAX_TRAIL_POINTS = 640
+        const val MAX_TRAIL_POINTS = 640
 
         /** How long the trail takes to fade after the finger lifts. */
-        private const val TRAIL_FADE_MS = 170L
+        const val TRAIL_FADE_MS = 170L
 
         /** Alpha of the trail at full strength. Dim on purpose: a bright ribbon is not LightOS. */
-        private const val TRAIL_ALPHA = 150f
+        const val TRAIL_ALPHA = 150f
 
         /** How thin and faint the tail goes, as a fraction of the head. */
-        private const val TRAIL_MIN_SCALE = 0.25f
+        const val TRAIL_MIN_SCALE = 0.25f
     }
 }
