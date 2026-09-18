@@ -2,6 +2,7 @@ package app.lightphonekeyboard
 
 import android.content.Context
 import android.util.Log
+import app.lightphonekeyboard.text.CrashBreaker
 import app.lightphonekeyboard.text.NeuralDecoder
 import app.lightphonekeyboard.text.SwipeTrace
 import org.pytorch.executorch.EValue
@@ -42,6 +43,25 @@ import java.io.File
  * app's own storage the first time it is needed. That and the model load happen on a background
  * thread; until they finish, [emissions] returns null and swipe typing falls back to the old decoder
  * rather than blocking a finger that has already lifted.
+ *
+ * ## The crash breaker, which is why this may be on by default
+ *
+ * Every `try`/`catch` in this file catches a Kotlin exception. **None of them can catch a native
+ * crash.** A SIGSEGV inside the ExecuTorch runtime kills the process where it stands: no exception,
+ * no stack trace, nothing written down afterwards. For an ordinary app that is a bad crash. For a
+ * keyboard it is worse than that — the IME process dying takes the keyboard out of every text field
+ * on the phone, including the ones needed to switch to another one.
+ *
+ * So the crash is not caught; it is *detected*. A flag goes to disk before the risky window and is
+ * cleared after it, both with `commit` rather than `apply` (see [Prefs.setSwipeModelArmed]). Finding
+ * it still set at the next launch means the process died inside that window, and nothing else can
+ * leave it in that state, because the clearing runs unconditionally. After [MAX_STRIKES] of those
+ * the model is not loaded again until somebody switches it back on by hand.
+ *
+ * The window deliberately covers a **warm-up run**, not just the load. Inference is at least as
+ * likely to fault as loading is, and putting one pass inside the armed window means a model that
+ * crashes on use is caught here — on a background thread, before the user has swiped — instead of
+ * under their finger, where it would take the word they were writing with it.
  */
 class SwipeEncoder(private val context: Context) {
 
@@ -60,22 +80,76 @@ class SwipeEncoder(private val context: Context) {
     /**
      * Load the model. Safe to call more than once; does nothing after a success or a failure.
      *
-     * Every failure is swallowed on purpose. This runs inside the only keyboard on the phone: a
-     * missing asset, an ExecuTorch build without the right kernels, or a phone whose ABI the native
-     * library does not cover must all end as "swipe typing works the way it did last month", never
-     * as a keyboard that will not open.
+     * Every catchable failure is swallowed on purpose. This runs inside the only keyboard on the
+     * phone: a missing asset, an ExecuTorch build without the right kernels, or a phone whose ABI
+     * the native library does not cover must all end as "swipe typing works the way it did last
+     * month", never as a keyboard that will not open. The failures that are *not* catchable are
+     * handled by the flag — see the note on this class.
      */
     fun prepare() {
         if (module != null || failed) return
+
+        // Did the last attempt come back? This is the whole breaker: the flag is cleared
+        // unconditionally at the end of an attempt, so finding it set means the process died in
+        // between. The counting rule is in CrashBreaker, where it has a test.
+        val armed = Prefs.swipeModelArmed(context)
+        val verdict = CrashBreaker.decide(armed, Prefs.swipeModelStrikes(context), MAX_STRIKES)
+        if (armed) {
+            Prefs.setSwipeModelStrikes(context, verdict.strikes)
+            Log.w(TAG, "the swipe model did not survive the last attempt (strike ${verdict.strikes})")
+        }
+        if (!verdict.proceed) {
+            failed = true
+            Prefs.setSwipeModelArmed(context, false)
+            return
+        }
+
+        Prefs.setSwipeModelArmed(context, true)
         try {
             val file = File(context.filesDir, MODEL_FILE)
             if (!file.exists() || file.length() == 0L) extract(file)
-            module = Module.load(file.absolutePath)
+            val loaded = Module.load(file.absolutePath)
+            // Run one pass before publishing it. A model that loads and then faults on use would
+            // otherwise crash under the user's finger, outside the armed window, and go unrecorded
+            // forever. It also pays the first-run cost here rather than on somebody's first swipe.
+            warmUp(loaded)
+            module = loaded
         } catch (e: Throwable) {
             failed = true
             Log.w(TAG, "swipe model unavailable; falling back to the shape decoder", e)
+        } finally {
+            // Unconditional, and that is what gives the flag its meaning: if this line did not run,
+            // the process is gone.
+            Prefs.setSwipeModelArmed(context, false)
         }
     }
+
+    /**
+     * One forward pass on a made-up trace, to find out whether inference works at all.
+     *
+     * The numbers mean nothing — a straight diagonal across a keyboard of evenly spread keys. What
+     * matters is that every kernel the real path uses is exercised, inside the armed window.
+     */
+    private fun warmUp(loaded: Module) {
+        val features = FloatArray(SwipeTrace.POINTS * 2)
+        for (i in 0 until SwipeTrace.POINTS) {
+            val t = i.toFloat() / (SwipeTrace.POINTS - 1)
+            features[i] = t
+            features[SwipeTrace.POINTS + i] = t
+        }
+        val keys = FloatArray(SwipeTrace.KEY_SLOTS * 2)
+        for (i in 0 until 26) {
+            keys[i * 2] = (i % 10) / 10f + 0.05f
+            keys[i * 2 + 1] = (i / 10) / 3f + 0.167f
+        }
+        loaded.forward(
+            EValue.from(Tensor.fromBlob(features, longArrayOf(1, 2, SwipeTrace.POINTS.toLong()))),
+            EValue.from(Tensor.fromBlob(keys, longArrayOf(1, SwipeTrace.KEY_SLOTS.toLong(), 2))),
+        )
+    }
+
+    /** True when the model has been switched off by the breaker rather than by the user. */
+    fun disabledByCrash(): Boolean = disabledByCrash(context)
 
     private fun extract(file: File) {
         val tmp = File(context.filesDir, "$MODEL_FILE.part")
@@ -125,9 +199,25 @@ class SwipeEncoder(private val context: Context) {
         module = null
     }
 
-    private companion object {
-        const val TAG = "SwipeEncoder"
-        const val ASSET = "swipe/encoder.pte"
-        const val MODEL_FILE = "swipe-encoder.pte"
+    companion object {
+        /**
+         * True when the breaker has given up on this phone. Readable without building an encoder,
+         * because the settings screen only wants to know whether to say so.
+         */
+        fun disabledByCrash(c: Context): Boolean = Prefs.swipeModelStrikes(c) >= MAX_STRIKES
+
+        private const val TAG = "SwipeEncoder"
+
+        /**
+         * Crashes tolerated before the model is left alone.
+         *
+         * Two rather than one. A process can die inside the armed window without the model being at
+         * fault — the system reclaiming memory is the ordinary case — and disabling a feature that
+         * works on the strength of one such coincidence would be wrong. Two is also the most the
+         * user ever experiences, which is the number that actually matters.
+         */
+        private const val MAX_STRIKES = 2
+        private const val ASSET = "swipe/encoder.pte"
+        private const val MODEL_FILE = "swipe-encoder.pte"
     }
 }

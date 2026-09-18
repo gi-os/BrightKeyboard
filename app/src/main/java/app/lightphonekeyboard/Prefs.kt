@@ -34,6 +34,8 @@ object Prefs {
     private const val KEY_CLIPBOARD = "clipboard_enabled"
     private const val KEY_CLIPS = "clipboard_clips"
     private const val KEY_NEURAL_SWIPE = "neural_swipe"
+    private const val KEY_MODEL_ARMED = "swipe_model_armed"
+    private const val KEY_MODEL_STRIKES = "swipe_model_strikes"
     private const val KEY_KLIPY_KEY = "klipy_key"
     private const val KEY_GIF_CUSTOMER = "gif_customer_id"
     private const val KEY_RECENT_GIFS = "recent_gifs"
@@ -337,24 +339,74 @@ object Prefs {
         prefs(c).edit().putString(KEY_CLIPS, value).apply()
 
     /**
-     * Read swipes with the bundled neural model rather than the older shape matcher. **Off by
-     * default** — the model is a native library and, on some phones, loading it takes the whole
-     * keyboard process down (a native crash, which no try/catch can stop). Swipe typing still works
-     * with the shape decoder; turn this on only once the model is known to load on this device.
+     * Read swipes with the bundled neural model rather than the older shape matcher. On by default.
      *
      * Measured against each other on 517 real human swipes, with this app's own dictionary behind
      * both: 74.7% right first time for the shape matcher, 92.5% for the model. The setting exists
      * because the model is a 2.6 MB file and a native library, and anyone who would rather not carry
      * either — or who finds the old decoder's mistakes more predictable — can have the old one back.
      *
+     * It was off by default for one release, because loading a native library can take the whole
+     * keyboard process down and nothing in Kotlin can catch that. What lets it be on again is
+     * [swipeModelArmed] below: the crash is now *detected* rather than merely feared.
+     *
      * Turning it off skips loading the model entirely. The shape decoder is always loaded: it is
      * what answers while the model is still being copied out of the APK, and on any phone where the
      * model will not load at all.
      */
-    fun neuralSwipe(c: Context): Boolean = prefs(c).getBoolean(KEY_NEURAL_SWIPE, false)
+    fun neuralSwipe(c: Context): Boolean = prefs(c).getBoolean(KEY_NEURAL_SWIPE, true)
 
-    fun setNeuralSwipe(c: Context, value: Boolean) =
+    fun setNeuralSwipe(c: Context, value: Boolean) {
         prefs(c).edit().putBoolean(KEY_NEURAL_SWIPE, value).apply()
+        // Switching it on by hand is a deliberate retry, so the strikes go. Somebody who has just
+        // been told the model was disabled and has turned it back on is asking for another attempt,
+        // and refusing them one because of a crash they already know about would be absurd.
+        if (value) clearSwipeModelStrikes(c)
+    }
+
+    // ------------------------------------------------------------------ the model's crash breaker
+    //
+    // A native crash kills the process outright. There is no exception, no stack trace, no chance to
+    // write anything down afterwards — so the only way to notice one is to write something down
+    // BEFORE the risky part and check, on the next launch, whether it was ever cleared.
+    //
+    // For an ordinary app this is a nicety. For a keyboard it is the difference between a bad
+    // release and an unusable phone: the IME process dying takes the keyboard out of every text
+    // field, including the ones you would need in order to fix it.
+
+    /**
+     * True while an attempt to load and run the model is in flight.
+     *
+     * Found still true at startup, it means the last attempt never finished — and since the code
+     * that would have cleared it runs unconditionally, the only way to leave it set is for the
+     * process to have died. See [SwipeEncoder].
+     */
+    fun swipeModelArmed(c: Context): Boolean = prefs(c).getBoolean(KEY_MODEL_ARMED, false)
+
+    /**
+     * Arm or disarm, with [android.content.SharedPreferences.Editor.commit] rather than `apply`.
+     *
+     * This is the whole mechanism and it is the one write in this file that cannot be asynchronous:
+     * `apply` hands the write to a background thread, and the process is about to be killed by a
+     * signal. An armed flag that had not reached the disk yet would be a crash nobody recorded.
+     */
+    @Suppress("ApplySharedPref")
+    fun setSwipeModelArmed(c: Context, value: Boolean) {
+        prefs(c).edit().putBoolean(KEY_MODEL_ARMED, value).commit()
+    }
+
+    /** How many launches have found the flag still armed, i.e. how many crashes have been seen. */
+    fun swipeModelStrikes(c: Context): Int = prefs(c).getInt(KEY_MODEL_STRIKES, 0)
+
+    @Suppress("ApplySharedPref")
+    fun setSwipeModelStrikes(c: Context, value: Int) {
+        prefs(c).edit().putInt(KEY_MODEL_STRIKES, value).commit()
+    }
+
+    @Suppress("ApplySharedPref")
+    fun clearSwipeModelStrikes(c: Context) {
+        prefs(c).edit().putInt(KEY_MODEL_STRIKES, 0).putBoolean(KEY_MODEL_ARMED, false).commit()
+    }
 
     /**
      * The user's own KLIPY key, which takes precedence over the one built into the APK.

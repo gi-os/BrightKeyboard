@@ -155,10 +155,13 @@ class TextEngine(private val context: Context) {
                 dictionary = loaded
 
                 // The trie and the model, for neural swipe decoding. Built after the shape decoder
-                // is already usable, because it is the one that has to work. Gated on the setting:
-                // the model is a native library, and loading it on a phone where it does not run is
-                // a process-killing crash that no try/catch here can stop — so it must not load at
-                // all unless the user has asked for it.
+                // is already usable, because it is the one that has to work.
+                //
+                // Gated on the setting, so switching it off means the native library is never
+                // loaded at all rather than loaded and ignored. Loading it on a phone where it does
+                // not run is a process-killing crash that no try/catch here can stop; what makes
+                // that survivable — and what lets the setting default to on — is the flag
+                // SwipeEncoder.prepare writes before it tries. See the note on that class.
                 try {
                     if (Prefs.neuralSwipe(context)) {
                         val lex = SwipeLexicon.build(loaded, words)

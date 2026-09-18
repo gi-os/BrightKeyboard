@@ -65,6 +65,13 @@ class SwipeActivity : AppCompatActivity() {
         // Required by the model's licence, and fair in any case: the model is not this app's work.
         root.addView(label(getString(R.string.swipe_engine_credit), 13f, R.color.gray))
 
+        // Said out loud only when it has happened. The alternative is a setting that reads as on
+        // while the shape decoder quietly answers every swipe, which is the state somebody would
+        // spend an evening failing to explain.
+        if (SwipeEncoder.disabledByCrash(this)) {
+            root.addView(label(getString(R.string.swipe_engine_crashed), 15f, R.color.white))
+        }
+
         root.addView(label(getString(R.string.swipe_reach_heading), 18f, R.color.gray))
         for (s in Alternatives.Strength.entries) {
             val check = option(root, pad, reachName(s), reachDetail(s)) {

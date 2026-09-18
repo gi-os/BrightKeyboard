@@ -68,6 +68,7 @@
     <string name="swipe_engine_shape">Shape matching</string>
     <string name="swipe_engine_shape_detail">Compares your trace against the path through each word\'s keys. What this keyboard used before, and still what answers if the model can\'t load.</string>
     <string name="swipe_engine_credit">Powered by FUTO Swipe technology.</string>
+    <string name="swipe_engine_crashed">The model stopped the keyboard twice on this phone, so it is not being loaded. Swipes are read by shape matching. Tap Model above to try it again.</string>
 
     <!-- One-handed, in settings. -->
     <string name="hand_title">One-handed</string>

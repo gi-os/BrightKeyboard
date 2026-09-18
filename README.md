@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v1.5.x** (tag `v1.5.<n>`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v1.6.x** (tag `v1.6.<n>`). `applicationId` is `app.lightphonekeyboard`.
 
 ## Why this exists
 
@@ -286,6 +286,31 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v1.6.x** (2026-09-18) — **The swipe model is on by default again, because a crash is now
+  detected rather than feared.**
+
+  It was switched off in 1.5 for a good reason: the model is a native library, a fault inside one
+  raises a signal rather than an exception, and the process is simply gone. Nothing in Kotlin catches
+  that. For an ordinary app it is a bad crash; for a keyboard it takes the keyboard out of every text
+  field on the phone, including the ones you would need to turn it off again.
+
+  So it is not caught, it is recorded. A flag goes to disk before the risky part and is cleared
+  after it, with `commit` rather than `apply` — the process is about to be killed by a signal, and a
+  write still sitting on a background thread is a crash nobody heard. Finding the flag still set at
+  the next launch means the attempt never came back, and nothing else can leave it that way, because
+  the clearing is unconditional. Two of those and the model is left alone until you switch it back
+  on, which the Swipe settings screen says in as many words.
+
+  The armed window covers a **warm-up run**, not just the load. Inference is at least as likely to
+  fault as loading is, and one pass inside the window catches a model that crashes on use here — on
+  a background thread, before anybody has swiped — rather than under your finger, where it would
+  take the word you were writing with it.
+
+  The counting rule is four lines and every one of them is an off-by-one waiting to happen, so it
+  lives in `text/CrashBreaker.kt` with a test that walks the sequence a phone actually goes through.
+  Giving up one attempt early takes a working feature from everybody; giving up one late is two more
+  crashes.
 
 - **v1.5.x** (2026-09-18) — **A GIF picker, and a tools page with only tools on it.**
 
