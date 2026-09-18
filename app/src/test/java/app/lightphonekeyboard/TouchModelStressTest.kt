@@ -1,5 +1,6 @@
 package app.lightphonekeyboard
 
+import app.lightphonekeyboard.text.TouchModel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -8,283 +9,386 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * Stress tests for the keyboard's per-tap accuracy + passive offset-learning logic.
+ * The tap-accuracy path end to end: a simulated typist against the real [TouchModel].
  *
- * [TouchLogic] below is a VERBATIM copy of the math in LightKeyboardView (resolveLetterTo / learnOffset
- * / sigmaKeyUnits / norm2 / rowOf) — kept identical so this exercises the real algorithm without pulling
- * in Android. If you change the logic in the view, mirror it here.
+ * [Board] mirrors `LightKeyboardView.resolveLetterTo` and `rebasePrior` — the geometry and the scoring
+ * loop, not the model, which is the shipped one. If you change the resolution logic in the view, mirror
+ * it here. `TouchModelTest` covers the model's own arithmetic; this covers what a person experiences:
+ * does it converge, does it stay converged, and does one key ever take ground from another.
  *
- * Geometry is in px on a synthetic 1080-wide QWERTY (1 dp ≈ 3 px, so the dp constants from the view map
- * to: sigmaAbs 33, clamp [-54, +6]). The simulator models a typist as: aim at a key, add Gaussian jitter,
- * plus an optional systematic vertical offset (the "fingers land low" effect) we expect the learner to
- * cancel out.
+ * Geometry is a synthetic 1080-wide QWERTY at 3x density, so the dp constants in the view map to
+ * sigmaAbs 33 and rowPitch 150. The typist is: aim at a key, add Gaussian jitter, plus an optional
+ * systematic offset per key (the "fingers land low" effect the model exists to cancel).
+ *
+ * The learning signal is the real one. The keyboard folds a tap in unless the typist deletes it; here
+ * the simulator knows which key was intended, so it vetoes exactly the taps a person would have
+ * backspaced. That is the closest honest analogue, and it is the part that cannot be checked on a
+ * phone: the model is passive, silent and permanent, so a sign error in it is invisible for a fortnight.
  */
 class TouchModelStressTest {
 
-    // ---- verbatim algorithm copy (mirrors LightKeyboardView) ----
-    private class TouchLogic(
-        val keys: List<Key>,
-        val rowPitch: Float,
-        val padTop: Float,
-        val sigmaAbs: Float,
-        val charLogP: FloatArray?,
-        val rowOffsets: FloatArray,
-        val clampLo: Float,
-        val clampHi: Float,
-    ) {
-        class Key(val ch: Char, val cx: Float, val cy: Float)
-
-        private val biasX = 0f
-        private val coreFrac = 0.5f
-        private val sigmaFrac = 0.72f
-        private val radiusFrac = 1.5f
-        private val lambda = 1.0f
-        private val learnRate = 0.06f
-
-        fun resolve(rawX: Float, rawY: Float, kw: Float, rawRow: Int, c1: Int, c2: Int, learn: Boolean = true): Int {
-            val idx = resolveTo(rawX, rawY, kw, rawRow, c1, c2)
-            if (learn) learnOffset(rawY, keys[idx])
-            return idx
-        }
-
-        private fun resolveTo(rawX: Float, rawY: Float, kw: Float, rawRow: Int, c1: Int, c2: Int): Int {
-            val cx = rawX + biasX
-            val cy = rawY + rowOffsets[rawRow]
-            var nearest = 0
-            var nd2 = Float.MAX_VALUE
-            for (i in keys.indices) {
-                val d2 = norm2(keys[i], cx, cy, kw)
-                if (d2 < nd2) { nd2 = d2; nearest = i }
-            }
-            if (sqrt(nd2) < coreFrac) return nearest
-            val logp = charLogP ?: return nearest
-            val twoSx2 = 2f * sigmaKeyUnits(kw).let { it * it }
-            val twoSy2 = 2f * sigmaKeyUnits(rowPitch).let { it * it }
-            val radius2 = radiusFrac * radiusFrac
-            var best = nearest
-            var bestScore = -Float.MAX_VALUE
-            for (i in keys.indices) {
-                val k = keys[i]
-                val dx = (k.cx - cx) / kw
-                val dy = (k.cy - cy) / rowPitch
-                if (dx * dx + dy * dy > radius2) continue
-                val score = -dx * dx / twoSx2 - dy * dy / twoSy2 +
-                    lambda * logp[(c1 * SYMS + c2) * SYMS + (k.ch - 'a')]
-                if (score > bestScore) { bestScore = score; best = i }
-            }
-            return best
-        }
-
-        private fun learnOffset(rawY: Float, key: Key) {
-            val row = rowOf(key.cy)
-            val delta = rawY - key.cy
-            if (abs(delta + rowOffsets[row]) > 0.6f * rowPitch) return
-            rowOffsets[row] += learnRate * (-delta - rowOffsets[row])
-            rowOffsets[row] = rowOffsets[row].coerceIn(clampLo, clampHi)
-        }
-
-        fun rowOf(cy: Float): Int = ((cy - padTop) / rowPitch).toInt().coerceIn(0, rowOffsets.size - 1)
-
-        private fun sigmaKeyUnits(pitchPx: Float): Float {
-            val floor = sigmaAbs / pitchPx
-            return sqrt(sigmaFrac * sigmaFrac + floor * floor)
-        }
-
-        private fun norm2(k: Key, cx: Float, cy: Float, kw: Float): Float {
-            val dx = (k.cx - cx) / kw
-            val dy = (k.cy - cy) / rowPitch
-            return dx * dx + dy * dy
-        }
-
-        companion object { const val SYMS = 27; const val BOUNDARY = 26 }
-    }
-
-    // ---- synthetic keyboard ----
-    private class SimKey(val ch: Char, val cx: Float, val cy: Float, val kw: Float, val row: Int)
+    // ---------------------------------------------------------------- geometry
 
     private val W = 1080f
     private val padSide = 18f
     private val padTop = 24f
     private val rowPitch = 150f
-    private val sigmaAbs = 33f
-    private val clampLo = -72f   // ≈ -24 dp at 3x (matches LightKeyboardView)
-    private val clampHi = 6f
+    private val keyGap = 9f
+    private val rowKeyH = rowPitch - 2 * keyGap
+    private val sigmaAbs = 33f          // 11 dp at 3x, the view's finger-width floor
+    private val sigmaFrac = 0.72f
     private val rows = listOf("qwertyuiop", "asdfghjkl", "zxcvbnm")
+    private val rowMeanPrior = floatArrayOf(0.18f, 0.145f, 0.11f)
 
-    private fun buildKeyboard(): List<SimKey> {
-        val out = ArrayList<SimKey>()
+    private class Key(val ch: Char, val cx: Float, val cy: Float, val kw: Float, val row: Int)
+
+    private val keys: List<Key> = ArrayList<Key>().also { out ->
         for ((r, row) in rows.withIndex()) {
             val colW = (W - 2 * padSide) / row.length
-            val cy = padTop + 75f + r * rowPitch   // row centres at 99, 249, 399
-            for ((i, ch) in row.withIndex()) {
-                out.add(SimKey(ch, padSide + (i + 0.5f) * colW, cy, colW, r))
-            }
+            val cy = padTop + rowPitch / 2 + r * rowPitch
+            for ((i, ch) in row.withIndex()) out.add(Key(ch, padSide + (i + 0.5f) * colW, cy, colW, r))
         }
-        return out
     }
 
-    private fun logic(sim: List<SimKey>, offsets: FloatArray, model: FloatArray? = null) = TouchLogic(
-        keys = sim.map { TouchLogic.Key(it.ch, it.cx, it.cy) },
-        rowPitch = rowPitch, padTop = padTop, sigmaAbs = sigmaAbs,
-        charLogP = model, rowOffsets = offsets, clampLo = clampLo, clampHi = clampHi,
+    /** The view takes one width for every letter, from the longest row. */
+    private val letterKeyW = keys[0].kw
+
+    private fun sigmaKeyUnits(pitch: Float) = sqrt(sigmaFrac * sigmaFrac + (sigmaAbs / pitch).let { it * it })
+
+    private fun freshPrior() = TouchModel.Prior(
+        FloatArray(TouchModel.N),
+        FloatArray(TouchModel.N) { i -> rowMeanPrior[keys.first { k -> k.ch == 'a' + i }.row] },
+        sigmaKeyUnits(letterKeyW), sigmaKeyUnits(rowPitch),
     )
 
-    /** Nearest key to a raw tap (mirrors findKey: the "hit" key whose row/width the view feeds in). */
-    private fun nearestSim(sim: List<SimKey>, x: Float, y: Float): SimKey =
-        sim.minByOrNull { (it.cx - x) * (it.cx - x) + (it.cy - y) * (it.cy - y) }!!
+    /** The model is indexed by letter; the layout is indexed by position. Keep them apart. */
+    private fun li(ch: Char) = ch - 'a'
+    private fun key(ch: Char) = keys.first { it.ch == ch }
 
-    /**
-     * Type [n] taps. Each picks a random intended key, lands at its centre + Gaussian jitter + a
-     * per-row systematic [offsetByRow] (positive = lands low). Returns accuracy (resolved == intended)
-     * measured over the LAST [tailFrac] of taps (so learning has settled).
-     */
+    /** The key whose drawn cell contains the point — what findKey answers. */
+    private fun hitKey(x: Float, y: Float): Key {
+        val r = (((y - padTop) / rowPitch).toInt()).coerceIn(0, rows.size - 1)
+        return keys.filter { it.row == r }.minByOrNull { abs(it.cx - x) }!!
+    }
+
+    // ---------------------------------------------------------------- the view's scoring loop
+
+    private inner class Board(val model: TouchModel, val lm: FloatArray? = null) {
+        val radiusFrac = 1.5f
+        val lambda = 1.0f
+
+        /** Nearest learned centre — LightKeyboardView.aimedAt. */
+        fun aimedAt(x: Float, y: Float): Key = keys.minByOrNull {
+            val dx = (x - it.cx) / letterKeyW - model.meanX(it.ch - 'a')
+            val dy = (y - it.cy) / rowPitch - model.meanY(it.ch - 'a')
+            dx * dx + dy * dy
+        }!!
+
+        fun inCore(x: Float, y: Float, home: Key): Boolean = TouchModel.anchored(
+            (x - home.cx) / letterKeyW - model.meanX(home.ch - 'a'),
+            (y - home.cy) / rowPitch - model.meanY(home.ch - 'a'),
+            home.kw / 2f / letterKeyW, rowKeyH / 2f / rowPitch)
+
+        fun resolve(x: Float, y: Float): Key {
+            val home = aimedAt(x, y)
+            if (inCore(x, y, home)) return home
+            var best = home
+            var bestScore = -Float.MAX_VALUE
+            for (k in keys) {
+                val i = k.ch - 'a'
+                val dx = (x - k.cx) / letterKeyW
+                val dy = (y - k.cy) / rowPitch
+                if (dx * dx + dy * dy > radiusFrac * radiusFrac) continue
+                var s = model.logLikelihood(i, dx, dy)
+                if (lm != null) s += lambda * lm[i]
+                if (s > bestScore) { bestScore = s; best = k }
+            }
+            return best
+        }
+
+        /** Resolve, then park the tap and let [intended] stand in for the typist's verdict. */
+        fun type(x: Float, y: Float, intended: Char?): Key {
+            val got = resolve(x, y)
+            model.hold(got.ch - 'a', (x - got.cx) / letterKeyW, (y - got.cy) / rowPitch)
+            if (intended != null && got.ch != intended) model.veto()
+            return got
+        }
+    }
+
+    /** Type [n] taps; returns accuracy over the last [tailFrac], after learning has settled. */
     private fun run(
-        sim: List<SimKey>, logic: TouchLogic, n: Int, rng: Random,
-        sigmaX: Float, sigmaY: Float, offsetByRow: FloatArray, tailFrac: Double = 1.0, learn: Boolean = true,
+        board: Board, n: Int, rng: Random, sigmaX: Float, sigmaY: Float,
+        offsetOf: (Key) -> Float, tailFrac: Double = 1.0, learn: Boolean = true,
     ): Double {
         var hit = 0; var total = 0
         val tailStart = (n * (1.0 - tailFrac)).toInt()
         for (t in 0 until n) {
-            val k = sim[rng.nextInt(sim.size)]
-            val rawX = k.cx + (rng.nextGaussian().toFloat()) * sigmaX
-            val rawY = k.cy + offsetByRow[k.row] + (rng.nextGaussian().toFloat()) * sigmaY
-            val hitKey = nearestSim(sim, rawX, rawY)
-            val idx = logic.resolve(rawX, rawY, hitKey.kw, hitKey.row, TouchLogic.BOUNDARY, TouchLogic.BOUNDARY, learn)
-            if (t >= tailStart) { total++; if (sim[idx].ch == k.ch) hit++ }
+            val k = keys[rng.nextInt(keys.size)]
+            val x = k.cx + rng.nextGaussian().toFloat() * sigmaX
+            val y = k.cy + offsetOf(k) + rng.nextGaussian().toFloat() * sigmaY
+            val got = if (learn) board.type(x, y, k.ch) else board.resolve(x, y)
+            if (t >= tailStart) { total++; if (got.ch == k.ch) hit++ }
         }
         return hit.toDouble() / total
     }
 
-    // ------------------------------------------------------------------ accurate typist
+    private val jitterX get() = 0.16f * letterKeyW
+    private val jitterY get() = 0.16f * rowPitch
 
-    @Test fun accurateTypist_staysAccurate_andOffsetDoesNotDrift() {
-        val sim = buildKeyboard()
-        val offsets = floatArrayOf(0f, 0f, 0f)
-        val l = logic(sim, offsets)
-        val acc = run(sim, l, 8000, Random(1), sigmaX = 0.18f * (W / 10), sigmaY = 0.18f * rowPitch,
-            offsetByRow = floatArrayOf(0f, 0f, 0f), tailFrac = 0.25)
-        println("[accurate] accuracy=${"%.4f".format(acc)} offsets=${offsets.toList()}")
-        assertTrue("accurate typist accuracy should stay high, was $acc", acc > 0.95)
-        // The adaptive offset must NOT drift away from ~0 for someone who taps accurately.
-        for (o in offsets) assertTrue("offset drifted to $o for an accurate typist", abs(o) < 0.12f * rowPitch)
+    // ---------------------------------------------------------------- accuracy and convergence
+
+    @Test
+    fun `an accurate typist stays accurate and is left alone`() {
+        val p = freshPrior()
+        val m = TouchModel(p)
+        val acc = run(Board(m), 8000, Random(1), jitterX, jitterY, { 0f }, tailFrac = 0.25)
+        assertTrue("accuracy fell to $acc", acc > 0.95)
+        assertTrue("the model wandered off a typist who needed no help: drift ${m.drift()}",
+            m.drift() < 0.12f)
     }
 
-    @Test fun accurateTypist_priorRelaxesTowardZero() {
-        // Fresh user starts at the "fingers land low" prior, but actually taps dead-on: learner should
-        // pull the over-compensation back toward 0 rather than fighting them.
-        val sim = buildKeyboard()
-        val offsets = floatArrayOf(-30f, -24f, -18f)   // the shipped prior (px)
-        val l = logic(sim, offsets)
-        run(sim, l, 6000, Random(2), 0.18f * (W / 10), 0.18f * rowPitch, floatArrayOf(0f, 0f, 0f))
-        println("[prior-relax] offsets=${offsets.toList()}")
-        for (o in offsets) assertTrue("prior should relax toward 0 for accurate typist, was $o", abs(o) < 8f)
+    @Test
+    fun `the population prior relaxes for someone it does not describe`() {
+        // A fresh install assumes fingers land low. Someone who taps dead centre must not spend the
+        // rest of their life being corrected upward for a miss they are not making.
+        val m = TouchModel(freshPrior())
+        run(Board(m), 8000, Random(2), jitterX, jitterY, { 0f })
+        for (c in "qam") assertTrue("'$c' still expects a low tap at ${m.meanY(c - 'a')}",
+            abs(m.meanY(c - 'a')) < 0.08f)
     }
 
-    // ------------------------------------------------------------------ adaptive convergence
-
-    @Test fun lowTypist_offsetConvergesToCompensation() {
-        // User systematically lands ~0.3 row low on every key. Learner should converge each row's offset
-        // toward -that, regardless of starting point.
-        val sim = buildKeyboard()
-        val trueLow = 0.30f * rowPitch                       // +45 px low
-        val offsets = floatArrayOf(0f, 0f, 0f)
-        val l = logic(sim, offsets)
-        run(sim, l, 8000, Random(3), 0.15f * (W / 10), 0.15f * rowPitch,
-            floatArrayOf(trueLow, trueLow, trueLow))
-        println("[low] trueLow=$trueLow converged offsets=${offsets.toList()} (expect ≈ ${-trueLow})")
-        for (o in offsets) assertTrue("offset should converge to ≈ ${-trueLow}, was $o",
-            abs(o - (-trueLow)) < 0.10f * rowPitch)
+    @Test
+    fun `a typist who lands low is followed`() {
+        val low = 0.30f
+        val m = TouchModel(freshPrior())
+        run(Board(m), 12000, Random(3), jitterX, jitterY, { low * rowPitch })
+        for (c in "qwasdfzxc") assertTrue(
+            "'$c' should have learned ≈$low, got ${m.meanY(c - 'a')}",
+            abs(m.meanY(c - 'a') - low) < 0.10f)
     }
 
-    @Test fun adaptive_beatsNoCompensation_forLowTypist() {
-        // A low typist with enough jitter that the vertical offset flips some taps to the row below.
-        // Adaptive learning should clearly beat a baseline whose offset is pinned at 0 (no learning).
-        val sim = buildKeyboard()
-        val low = floatArrayOf(0.42f * rowPitch, 0.42f * rowPitch, 0.42f * rowPitch)
-        val sx = 0.16f * (W / 10); val sy = 0.22f * rowPitch
-
-        // Baseline: offset fixed at 0, learning OFF.
-        val accFixed = run(sim, logic(sim, floatArrayOf(0f, 0f, 0f)), 8000, Random(4), sx, sy, low,
+    @Test
+    fun `learning beats the population prior for a typist who misses`() {
+        // The prior already compensates a typical miss, so the thing worth checking is a typist the
+        // prior does not describe: someone who lands two thirds of a row low.
+        val off: (Key) -> Float = { 0.65f * rowPitch }
+        val sx = jitterX; val sy = 0.18f * rowPitch
+        val fixed = run(Board(TouchModel(freshPrior())), 10000, Random(4), sx, sy, off,
             tailFrac = 0.2, learn = false)
-        // Adaptive: starts at 0, learning ON.
-        val offsets = floatArrayOf(0f, 0f, 0f)
-        val accLearned = run(sim, logic(sim, offsets), 8000, Random(4), sx, sy, low, tailFrac = 0.2)
-        println("[adaptive-vs-fixed] fixed0=${"%.3f".format(accFixed)} learned=${"%.3f".format(accLearned)} offsets=${offsets.toList()}")
-        assertTrue("learned ($accLearned) should clearly beat fixed-0 ($accFixed)", accLearned > accFixed + 0.05)
+        val learned = run(Board(TouchModel(freshPrior())), 10000, Random(4), sx, sy, off, tailFrac = 0.2)
+        println("[low typist] prior only $fixed, learned $learned")
+        assertTrue("learned ($learned) should clearly beat the prior alone ($fixed)",
+            learned > fixed + 0.05)
     }
 
-    // ------------------------------------------------------------------ per-row independence
-
-    @Test fun perRowOffsetsConvergeIndependently() {
-        val sim = buildKeyboard()
-        val byRow = floatArrayOf(0.30f * rowPitch, 0.18f * rowPitch, 0.06f * rowPitch)
-        val offsets = floatArrayOf(0f, 0f, 0f)
-        val l = logic(sim, offsets)
-        run(sim, l, 12000, Random(5), 0.15f * (W / 10), 0.15f * rowPitch, byRow)
-        println("[per-row] true=${byRow.map { -it }} learned=${offsets.toList()}")
-        for (r in 0..2) assertTrue("row $r should converge to ≈ ${-byRow[r]}, was ${offsets[r]}",
-            abs(offsets[r] - (-byRow[r])) < 0.12f * rowPitch)
+    @Test
+    fun `two keys on the same row can be learned differently`() {
+        // The whole of idea 1. The per-row model this replaced could not represent this at all: one
+        // number per row cannot say that a thumb undershoots 'q' and overshoots 'p'.
+        val m = TouchModel(freshPrior())
+        val perKey = mapOf('q' to 0.34f, 'p' to -0.20f)
+        run(Board(m), 20000, Random(5), jitterX, jitterY, { k -> (perKey[k.ch] ?: 0f) * rowPitch })
+        assertTrue("q learned ${m.meanY(li('q'))}", abs(m.meanY(li('q')) - 0.34f) < 0.12f)
+        assertTrue("p learned ${m.meanY(li('p'))}", abs(m.meanY(li('p')) + 0.20f) < 0.12f)
+        assertTrue("and they must not have been averaged together",
+            m.meanY(li('q')) - m.meanY(li('p')) > 0.35f)
     }
 
-    // ------------------------------------------------------------------ safety / runaway
-
-    @Test fun extremeOffset_clampsAndNeverEscapes() {
-        val sim = buildKeyboard()
-        val extreme = floatArrayOf(2f * rowPitch, 2f * rowPitch, 2f * rowPitch)  // absurdly low
-        val offsets = floatArrayOf(0f, 0f, 0f)
-        val l = logic(sim, offsets)
-        run(sim, l, 4000, Random(6), 0.15f * (W / 10), 0.15f * rowPitch, extreme)
-        println("[clamp] offsets=${offsets.toList()} clamp=[$clampLo, $clampHi]")
-        for (o in offsets) assertTrue("offset $o must stay within clamp [$clampLo,$clampHi]",
-            o in clampLo..clampHi)
-    }
-
-    @Test fun randomGarbageTaps_offsetStaysBounded_noCrash() {
-        val sim = buildKeyboard()
-        val offsets = floatArrayOf(0f, 0f, 0f)
-        val l = logic(sim, offsets)
+    @Test
+    fun `a key hit sloppily widens and its neighbours do not`() {
+        // Idea 2. 'g' gets a shaky finger; everything else is steady.
+        val m = TouchModel(freshPrior())
+        run(Board(m), 20000, Random(6), jitterX, jitterY, { 0f })
+        val steady = m.sigmaY(li('h'))
+        val m2 = TouchModel(freshPrior())
+        val b2 = Board(m2)
         val rng = Random(7)
         repeat(20000) {
-            val x = rng.nextFloat() * W
-            val y = padTop + rng.nextFloat() * (rowPitch * 3)
-            val hk = nearestSim(sim, x, y)
-            l.resolve(x, y, hk.kw, hk.row, TouchLogic.BOUNDARY, TouchLogic.BOUNDARY)
+            val k = keys[rng.nextInt(keys.size)]
+            val wobble = if (k.ch == 'g') 3.0f else 1.0f
+            b2.type(k.cx + rng.nextGaussian().toFloat() * jitterX * wobble,
+                k.cy + rng.nextGaussian().toFloat() * jitterY * wobble, k.ch)
         }
-        println("[garbage] offsets after 20k random taps=${offsets.toList()}")
-        for (o in offsets) assertTrue("random taps must keep offset bounded, was $o", o in clampLo..clampHi)
+        val steadyKeys = "qwertyuiopasdfhjklzxcvbnm".map { m2.sigmaY(li(it)) }
+        assertTrue("the shaky key did not stand out: g=${m2.sigmaY(li('g'))}, " +
+            "steadiest others up to ${steadyKeys.max()}", m2.sigmaY(li('g')) > steadyKeys.max() * 1.15f)
+        // The spread is relative to this typist's own average, so a shaky key nudges every other
+        // key's ratio down a little. What must hold is that the steady keys stay together — a spread
+        // estimate noisy enough to scatter them is worse than no per-key spread at all.
+        assertTrue("the steady keys drifted apart: ${steadyKeys.min()}..${steadyKeys.max()}",
+            steadyKeys.max() / steadyKeys.min() < 1.22f)
+        assertTrue("unused baseline sanity", steady > 0f)
     }
 
-    @Test fun typoNoise_doesNotPoisonOffset() {
-        // Accurate typist, but 12% of taps are pure random fat-fingers. Offset should stay near 0.
-        val sim = buildKeyboard()
-        val offsets = floatArrayOf(0f, 0f, 0f)
-        val l = logic(sim, offsets)
-        val rng = Random(8)
-        val sx = 0.16f * (W / 10); val sy = 0.16f * rowPitch
-        repeat(10000) {
-            if (rng.nextFloat() < 0.12f) {
-                val x = rng.nextFloat() * W; val y = padTop + rng.nextFloat() * (rowPitch * 3)
-                val hk = nearestSim(sim, x, y)
-                l.resolve(x, y, hk.kw, hk.row, TouchLogic.BOUNDARY, TouchLogic.BOUNDARY)
-            } else {
-                val k = sim[rng.nextInt(sim.size)]
-                val x = k.cx + rng.nextGaussian().toFloat() * sx
-                val y = k.cy + rng.nextGaussian().toFloat() * sy
-                val hk = nearestSim(sim, x, y)
-                l.resolve(x, y, hk.kw, hk.row, TouchLogic.BOUNDARY, TouchLogic.BOUNDARY)
+    // ---------------------------------------------------------------- one key must not eat another
+
+    /** Fraction of points inside each drawn key that resolve to some other key. */
+    private fun stolenFraction(board: Board): Double {
+        var inside = 0; var lost = 0
+        for (k in keys) {
+            var gx = -0.45f
+            while (gx <= 0.45f) {
+                var gy = -0.44f
+                while (gy <= 0.44f) {
+                    val got = board.resolve(k.cx + gx * k.kw, k.cy + gy * rowPitch)
+                    inside++
+                    if (got.ch != k.ch) lost++
+                    gy += 0.04f
+                }
+                gx += 0.03f
             }
         }
-        println("[typo-noise] offsets=${offsets.toList()}")
-        for (o in offsets) assertTrue("typos should not poison offset, was $o", abs(o) < 0.18f * rowPitch)
+        return lost.toDouble() / inside
     }
 
-    @Test fun perfectCenterTap_resolvesToIntendedKey() {
-        val sim = buildKeyboard()
-        val l = logic(sim, floatArrayOf(0f, 0f, 0f))
-        for (k in sim) {
-            val hk = nearestSim(sim, k.cx, k.cy)
-            val idx = l.resolve(k.cx, k.cy, hk.kw, hk.row, TouchLogic.BOUNDARY, TouchLogic.BOUNDARY)
-            assertEquals("dead-centre tap on '${k.ch}' must resolve to itself", k.ch, sim[idx].ch)
+    @Test
+    fun `a heavily used key does not take a strip out of the one next to it`() {
+        // The `-ln σ` normaliser is right and must stay, but it hands a key that has narrowed a
+        // standing bonus over one still sitting on the population prior. Left unchecked the effect is
+        // that the more you use a key, the more of its neighbour it swallows, with no language
+        // evidence involved at all — which is exactly the failure a person would report as "it types
+        // the wrong letter now" and could never explain.
+        val baseline = stolenFraction(Board(TouchModel(freshPrior())))
+        val m = TouchModel(freshPrior())
+        val b = Board(m)
+        repeat(4000) { b.type(key('f').cx, key('f').cy, 'f') }
+        b.model.flush()
+        val after = stolenFraction(Board(m))
+        assertTrue("training one key cost its neighbours " +
+            "${"%.1f".format((after - baseline) * 100)}% of their drawn area", after - baseline < 0.04)
+    }
+
+    @Test
+    fun `however shakily one key is hit, it cannot swallow its neighbours`() {
+        // The band on the spread is the bound on this. A key hit three times more loosely than the
+        // rest genuinely should claim more ground — that is idea 2 — but "more" has to stop somewhere,
+        // and the `-ln σ` term means an unbounded width is an unbounded standing advantage.
+        val baseline = stolenFraction(Board(TouchModel(freshPrior())))
+        val m = TouchModel(freshPrior())
+        val b = Board(m)
+        val rng = Random(13)
+        repeat(30000) {
+            val k = keys[rng.nextInt(keys.size)]
+            val w = if (k.ch == 'g') 4.0f else 1.0f
+            b.type(k.cx + rng.nextGaussian().toFloat() * jitterX * w,
+                k.cy + rng.nextGaussian().toFloat() * jitterY * w, k.ch)
         }
+        m.flush()
+        val after = stolenFraction(Board(m))
+        assertTrue("one very shaky key cost its neighbours " +
+            "${"%.1f".format((after - baseline) * 100)}% of their drawn area", after - baseline < 0.05)
+    }
+
+    @Test
+    fun `a dead-centre tap always types the key that is drawn there`() {
+        val m = TouchModel(freshPrior())
+        val b = Board(m)
+        run(b, 20000, Random(8), jitterX, jitterY, { 0.35f * rowPitch })   // let it learn a big offset
+        for (k in keys) assertEquals("centre of '${k.ch}'", k.ch, b.resolve(k.cx, k.cy).ch)
+    }
+
+    @Test
+    fun `the language model cannot take a tap out of the core it is in`() {
+        // This is the anchoring promise, stated the way the code can keep it: wherever a tap is in the
+        // core of the key it was aimed at, nothing downstream gets a vote. The language model here is
+        // rigged to want 'q' everywhere, far harder than a real trigram model ever would.
+        val lm = FloatArray(TouchModel.N) { if (it == li('q')) 0f else -40f }
+        val m = TouchModel(freshPrior())
+        val plain = Board(m)
+        val rigged = Board(m, lm)
+        run(plain, 20000, Random(12), jitterX, jitterY, { 0.25f * rowPitch })   // give it something learned
+        m.flush()
+        var checked = 0
+        var x = padSide
+        while (x < W - padSide) {
+            var y = padTop
+            while (y < padTop + 3 * rowPitch) {
+                val home = rigged.aimedAt(x, y)
+                if (rigged.inCore(x, y, home)) {
+                    assertEquals("a tap in the core of '${home.ch}' was overruled", home.ch,
+                        rigged.resolve(x, y).ch)
+                    checked++
+                }
+                y += 3f
+            }
+            x += 3f
+        }
+        assertTrue("the sweep found no anchored points at all", checked > 5000)
+    }
+
+    @Test
+    fun `most of every drawn key is anchored, not merely its middle`() {
+        // 0.5 per axis reads as "the middle half" and is a quarter of the area: it would have tripled
+        // the ground the language model is allowed to take compared with the circular core this
+        // replaced. Measured on the drawn rectangles, with nothing learned.
+        val m = TouchModel(freshPrior())
+        val b = Board(m)
+        var inside = 0
+        var anchored = 0
+        for (k in keys) {
+            var gx = -0.48f
+            while (gx <= 0.48f) {
+                var gy = -0.44f
+                while (gy <= 0.44f) {
+                    val x = k.cx + gx * k.kw
+                    val y = k.cy + gy * rowPitch
+                    inside++
+                    if (b.inCore(x, y, b.aimedAt(x, y))) anchored++
+                    gy += 0.02f
+                }
+                gx += 0.02f
+            }
+        }
+        val frac = anchored.toDouble() / inside
+        assertTrue("only ${"%.0f".format(frac * 100)}% of each key is guaranteed to itself", frac > 0.6)
+    }
+
+    // ---------------------------------------------------------------- safety
+
+    @Test
+    fun `an absurd typist cannot run the model off the keyboard`() {
+        val m = TouchModel(freshPrior())
+        run(Board(m), 6000, Random(9), jitterX, jitterY, { 2f * rowPitch })
+        for (i in 0 until TouchModel.N) {
+            assertTrue("x[$i] = ${m.meanX(i)}", abs(m.meanX(i)) <= TouchModel.MEAN_CLAMP + 1e-4f)
+            assertTrue("y[$i] = ${m.meanY(i)}", abs(m.meanY(i)) <= TouchModel.MEAN_CLAMP + 1e-4f)
+        }
+    }
+
+    @Test
+    fun `twenty thousand random taps leave the model bounded and readable`() {
+        val m = TouchModel(freshPrior())
+        val b = Board(m)
+        val rng = Random(10)
+        repeat(20000) {
+            b.type(rng.nextFloat() * W, padTop + rng.nextFloat() * rowPitch * 3, null)
+        }
+        m.flush()
+        for (i in 0 until TouchModel.N) {
+            assertTrue("x[$i]", abs(m.meanX(i)) <= TouchModel.MEAN_CLAMP + 1e-4f)
+            assertTrue("σx[$i] = ${m.sigmaX(i)}", m.sigmaX(i) in 0.3f..1.1f)
+        }
+        val back = TouchModel.parse(m.serialize(), freshPrior())
+        for (i in 0 until TouchModel.N) assertEquals(m.meanY(i), back.meanY(i), 1e-3f)
+    }
+
+    @Test
+    fun `fat-finger typos do not poison the keys around them`() {
+        // 12% of taps land anywhere at all. Those are the ones a person deletes, so the veto rule
+        // should keep them out of the model entirely.
+        val m = TouchModel(freshPrior())
+        val b = Board(m)
+        val rng = Random(11)
+        repeat(20000) {
+            if (rng.nextFloat() < 0.12f) {
+                b.type(rng.nextFloat() * W, padTop + rng.nextFloat() * rowPitch * 3, null)
+            } else {
+                val k = keys[rng.nextInt(keys.size)]
+                b.type(k.cx + rng.nextGaussian().toFloat() * jitterX,
+                    k.cy + rng.nextGaussian().toFloat() * jitterY, k.ch)
+            }
+        }
+        m.flush()
+        assertTrue("typos dragged the model to ${m.drift()}", m.drift() < 0.15f)
     }
 }

@@ -33,13 +33,19 @@ import kotlin.math.sqrt
  *
  * ## Anchoring
  *
- * [ANCHOR_FRAC] is a hard floor, not a tunable weight: a tap in the middle half of a drawn key types
- * that key, whatever the language model would prefer. Gunawardana, Paek & Meek (IUI 2010) showed
- * that without such a floor a key-target model will happily make a *deliberate, well-aimed* tap type
- * something else, and that users find this far worse than the errors it prevents — the drawn key is
- * a promise. The floor is applied to the offset-corrected point, i.e. to where the user believes
- * they touched rather than to where the digitiser says they did, because correcting the sensor is
- * not the same as second-guessing the aim.
+ * [ANCHOR_FRAC] is a hard floor, not a tunable weight: a tap in the core of a drawn key types that
+ * key, whatever the language model or anything learned here would prefer. Gunawardana, Paek & Meek
+ * (IUI 2010) showed that without such a floor a key-target model will happily make a *deliberate,
+ * well-aimed* tap type something else, and that users find this far worse than the errors it
+ * prevents — the drawn key is a promise.
+ *
+ * It is measured on the **raw** offset from the drawn centre, not the offset-corrected one. Correcting
+ * for where a fingertip is sensed is worth doing for an ambiguous tap near a boundary; it has no
+ * business overruling a tap in the middle of a key. Measuring it on the corrected point also makes
+ * the promise conditional on the learned mean staying smaller than the core, which nothing enforces:
+ * a key whose mean had drifted would have had its guaranteed band slide off its own drawn centre.
+ * So the division of labour is: the core is the drawn key's, and everything outside it is the
+ * model's.
  *
  * Pure and Android-free so the learning rule can be tested off a device: it is passive, silent and
  * permanent, which is the worst combination to debug by feel.
@@ -68,7 +74,7 @@ class TouchModel(private val prior: Prior) {
     fun meanX(i: Int): Float = mx[i]
     fun meanY(i: Int): Float = my[i]
 
-    /** Mean vertical offset over every key — the one number the swipe tracer needs. */
+    /** Mean vertical offset over every key — for a swipe trace, which has no one key to ask. */
     fun averageMeanY(): Float {
         var s = 0f
         for (v in my) s += v
@@ -76,17 +82,47 @@ class TouchModel(private val prior: Prior) {
     }
 
     /**
-     * Gaussian width for key [i], blended toward the prior by how much evidence there is. A key tapped
-     * three times must not be trusted with its own variance: three taps in the same spot read as a
-     * pinpoint target and would make that key refuse everything around it. [CONFIDENCE_K] taps is the
-     * half-way point.
+     * Gaussian width for key [i]: the shared width, scaled by how loosely this key is hit **compared
+     * with this typist's other keys**.
+     *
+     * Relative, not absolute, and that is the whole of it. [Prior.sx] is a smoothing width — it sets
+     * how sharply the spatial term falls off against the language model, and the two were fitted
+     * together — not an estimate of how far a finger scatters, which is several times smaller. Scoring
+     * a measured scatter against it directly would either pin every key to a floor, leaving a per-key
+     * spread with nothing to say, or let a well-used key outscore a barely-used one by a wide margin
+     * through the `-ln σ` term alone, and take a strip out of the key drawn next to it. Dividing by
+     * the typist's own average sidesteps both: a typical key comes out at 1 whatever the absolute
+     * numbers are, the language model's influence is untouched, and [SPREAD_MIN]/[SPREAD_MAX] put a
+     * hard bound on what any one key can win before distance is considered.
+     *
+     * The blend toward that average is by evidence. A key tapped three times must not be trusted with
+     * its own variance: three taps in one spot read as a pinpoint target and would make the key refuse
+     * everything around it. [CONFIDENCE_K] taps is the half-way point.
      */
-    fun sigmaX(i: Int): Float = blended(vx[i], prior.sx, n[i])
-    fun sigmaY(i: Int): Float = blended(vy[i], prior.sy, n[i])
+    fun sigmaX(i: Int): Float = prior.sx * spread(vx[i], n[i], baseVx())
+    fun sigmaY(i: Int): Float = prior.sy * spread(vy[i], n[i], baseVy())
 
-    private fun blended(v: Float, priorSigma: Float, count: Float): Float {
-        val v0 = priorSigma * priorSigma
-        return sqrt((count * v + CONFIDENCE_K * v0) / (count + CONFIDENCE_K))
+    private fun spread(v: Float, count: Float, base: Float): Float {
+        val blended = (count * v + CONFIDENCE_K * base) / (count + CONFIDENCE_K)
+        return sqrt(blended / base).coerceIn(SPREAD_MIN, SPREAD_MAX)
+    }
+
+    // This typist's average measured scatter, over the keys they have actually used. Recomputed only
+    // when the model changes: sigmaX/sigmaY are called once per candidate key per tap.
+    private var baseDirty = true
+    private var baseX = 1f
+    private var baseY = 1f
+
+    private fun baseVx(): Float { if (baseDirty) recomputeBase(); return baseX }
+    private fun baseVy(): Float { if (baseDirty) recomputeBase(); return baseY }
+
+    private fun recomputeBase() {
+        var sx = 0f; var sy = 0f; var w = 0f
+        for (i in 0 until N) if (n[i] > 0f) { sx += n[i] * vx[i]; sy += n[i] * vy[i]; w += n[i] }
+        // Nothing learned yet: any positive number gives every key a ratio of exactly 1.
+        baseX = if (w > 0f) (sx / w).coerceAtLeast(VAR_MIN) else 1f
+        baseY = if (w > 0f) (sy / w).coerceAtLeast(VAR_MIN) else 1f
+        baseDirty = false
     }
 
     /**
@@ -116,10 +152,11 @@ class TouchModel(private val prior: Prior) {
         val ey = dy - my[i]
         mx[i] = (mx[i] + RATE * ex).coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
         my[i] = (my[i] + RATE * ey).coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
-        // Variance against the pre-update mean, the usual incremental form.
-        vx[i] = (vx[i] + RATE * (ex * ex - vx[i])).coerceIn(VAR_MIN, VAR_MAX)
-        vy[i] = (vy[i] + RATE * (ey * ey - vy[i])).coerceIn(VAR_MIN, VAR_MAX)
         if (n[i] < COUNT_CAP) n[i] += 1f     // capped, so a long-standing model can still move house
+        // Variance against the pre-update mean, the usual incremental form.
+        vx[i] = (vx[i] + RATE_VAR * (ex * ex - vx[i])).coerceIn(VAR_MIN, VAR_MAX)
+        vy[i] = (vy[i] + RATE_VAR * (ey * ey - vy[i])).coerceIn(VAR_MIN, VAR_MAX)
+        baseDirty = true
         return true
     }
 
@@ -132,9 +169,10 @@ class TouchModel(private val prior: Prior) {
      * geometry without a height change quietly undoing a fortnight of learning.
      */
     fun syncUnseen() {
+        val bx = baseVx(); val by = baseVy()
         for (i in 0 until N) if (n[i] == 0f) {
             mx[i] = prior.meanX[i]; my[i] = prior.meanY[i]
-            vx[i] = prior.sx * prior.sx; vy[i] = prior.sy * prior.sy
+            vx[i] = bx; vy[i] = by        // a key with no history is, by definition, average
         }
     }
 
@@ -190,14 +228,17 @@ class TouchModel(private val prior: Prior) {
      *  the object every caller already holds. */
     fun copyFrom(other: TouchModel) {
         heldKey = -1
+        baseDirty = true
         for (i in 0 until N) {
             mx[i] = other.mx[i]; my[i] = other.my[i]
-            vx[i] = other.vx[i]; vy[i] = other.vy[i]; n[i] = other.n[i]
+            vx[i] = other.vx[i]; vy[i] = other.vy[i]
+            n[i] = other.n[i]
         }
     }
 
     fun reset() {
         heldKey = -1
+        baseDirty = true
         for (i in 0 until N) {
             mx[i] = prior.meanX[i]; my[i] = prior.meanY[i]
             vx[i] = prior.sx * prior.sx; vy[i] = prior.sy * prior.sy
@@ -216,7 +257,8 @@ class TouchModel(private val prior: Prior) {
         for (i in 0 until N) {
             sb.append(';')
             sb.append(r(mx[i])).append(',').append(r(my[i])).append(',')
-                .append(r(vx[i])).append(',').append(r(vy[i])).append(',').append(r(n[i]))
+                .append(r(vx[i])).append(',').append(r(vy[i])).append(',')
+                .append(r(n[i]))
         }
         return sb.toString()
     }
@@ -227,15 +269,44 @@ class TouchModel(private val prior: Prior) {
         const val N = 26
         const val VERSION = "v2"
 
-        /** A tap inside this fraction of a drawn key's box, per axis, always types that key. */
-        const val ANCHOR_FRAC = 0.5f
+        /**
+         * A tap inside this fraction of a drawn key's box, per axis, always types that key. 0.85 per
+         * axis is ~72% of a key's area, which is what the circular core it replaced covered; the
+         * obvious 0.5 reads as "the middle half" but is a quarter of the area, and would have tripled
+         * the ground the language model is allowed to take.
+         */
+        const val ANCHOR_FRAC = 0.85f
 
-        const val RATE = 0.06f          // EMA step; ~30 taps to converge, slow enough to ignore strays
+        const val RATE = 0.06f          // EMA step for the mean; ~30 taps, slow enough to ignore strays
+
+        /**
+         * EMA step for the spread, an order of magnitude slower. A variance needs far more samples
+         * than a mean does for the same precision — at [RATE] it is built from the last dozen or so
+         * taps, and on real scatter that is noisy enough to push a perfectly steady key to the end of
+         * the band by luck, which is worse than not measuring it.
+         */
+        const val RATE_VAR = 0.008f
         /** A whole key away from the centre, accepted or not, is evidence about some other key. */
         const val LEARN_GATE = 1.0f
-        const val MEAN_CLAMP = 0.45f    // a learned centre further out than this means something else broke
-        const val VAR_MIN = 0.1225f     // σ 0.35 key units
-        /** σ 1.0. [observe] cannot exceed it anyway, since [LEARN_GATE] binds first; [parse] can. */
+        /** A learned centre may move this far and no further. It is correcting for where a fingertip
+         *  is sensed against where it was aimed — a few millimetres (Holz & Baudisch) — so 0.3 of a key
+         *  is already generous, and past it the keyboard would be guessing at intent rather than
+         *  correcting a sensor. It also keeps the corrected point inside the key it was aimed at. */
+        const val MEAN_CLAMP = 0.3f
+        /**
+         * σ 0.5 key units. Not a safety rail — it sets how much a well-used key may outscore a
+         * barely-used one through the `-ln σ` term alone. Real finger scatter on a phone keyboard runs
+         * around 0.3–0.5 of a key (Bi & Zhai), so an estimate below this is the sample talking, not
+         * the typist; and left lower, a heavily used key narrows until it takes a visible strip out of
+         * the drawn key below it with no language evidence at all.
+         */
+        const val VAR_MIN = 1e-4f       // only so a ratio can never divide by zero
+
+        /** How much looser or tighter than this typist's own average one key's target may be. Bounds
+         *  the standing advantage the `-ln σ` term can hand a well-used key over a barely-used one. */
+        const val SPREAD_MIN = 0.85f
+        const val SPREAD_MAX = 1.25f
+        /** [observe] cannot exceed it anyway, since [LEARN_GATE] binds first; a corrupt [parse] can. */
         const val VAR_MAX = 1.0f
         const val CONFIDENCE_K = 8f     // taps at which a key's own spread is trusted half and half
         const val COUNT_CAP = 500f
@@ -285,6 +356,9 @@ class TouchModel(private val prior: Prior) {
                 val row = rowOfKey(i)
                 val v = px.getOrNull(row) ?: continue
                 m.my[i] = (-v / rowPitchPx).coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
+                // Give it a history, or the first [syncUnseen] after the next layout treats the key as
+                // never used and puts the population prior straight back over what was carried across.
+                m.n[i] = CONFIDENCE_K
             }
             return m
         }

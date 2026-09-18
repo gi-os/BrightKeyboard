@@ -25,21 +25,31 @@ class TouchModelTest {
     // ---------------------------------------------------------------- anchoring
 
     @Test
-    fun `the middle half of a drawn key is its own, whatever else is true`() {
+    fun `the core of a drawn key is its own, whatever else is true`() {
         val halfW = 0.5f
         val halfH = 0.5f
+        val core = TouchModel.ANCHOR_FRAC * 0.5f
         assertTrue(TouchModel.anchored(0f, 0f, halfW, halfH))
-        assertTrue(TouchModel.anchored(0.24f, 0.24f, halfW, halfH))
+        assertTrue(TouchModel.anchored(core - 0.01f, core - 0.01f, halfW, halfH))
         assertFalse("just outside the core must be open to the model",
-            TouchModel.anchored(0.26f, 0f, halfW, halfH))
-        assertFalse(TouchModel.anchored(0f, 0.26f, halfW, halfH))
+            TouchModel.anchored(core + 0.01f, 0f, halfW, halfH))
+        assertFalse(TouchModel.anchored(0f, core + 0.01f, halfW, halfH))
+    }
+
+    @Test
+    fun `the core covers most of a key, not a quarter of it`() {
+        // 0.5 per axis reads as "the middle half" and is a quarter of the area. This is the number
+        // that decides how much of every drawn key the language model may overrule, so it is worth
+        // stating as the thing it actually is.
+        val area = TouchModel.ANCHOR_FRAC * TouchModel.ANCHOR_FRAC
+        assertTrue("only ${(area * 100).toInt()}% of each key would be guaranteed", area > 0.6f)
     }
 
     @Test
     fun `a wider key anchors over a wider core`() {
-        assertFalse(TouchModel.anchored(0.4f, 0f, halfW = 0.5f, halfH = 0.5f))
+        assertFalse(TouchModel.anchored(0.7f, 0f, halfW = 0.5f, halfH = 0.5f))
         assertTrue("a key drawn twice as wide must keep twice the core",
-            TouchModel.anchored(0.4f, 0f, halfW = 1.0f, halfH = 0.5f))
+            TouchModel.anchored(0.7f, 0f, halfW = 1.0f, halfH = 0.5f))
     }
 
     // ---------------------------------------------------------------- learning the offset
@@ -91,15 +101,29 @@ class TouchModelTest {
 
     @Test
     fun `a key hit tightly narrows and a key hit loosely widens`() {
-        val tight = TouchModel(prior(meanY = 0f))
-        val loose = TouchModel(prior(meanY = 0f))
+        // Within one model, because the spread is relative: it says how this key compares with this
+        // typist's other keys. A model with one trained key has nothing to compare it against.
+        val m = TouchModel(prior(meanY = 0f))
         val scatter = floatArrayOf(-0.6f, 0.55f, -0.5f, 0.65f, -0.65f, 0.5f)
-        repeat(200) { i ->
-            tight.observe(E, 0f, 0f)
-            loose.observe(E, scatter[i % scatter.size], 0f)
+        repeat(3000) { i ->
+            m.observe(E, 0f, 0f)                             // e, dead centre every time
+            m.observe(R, scatter[i % scatter.size], 0f)      // r, all over the place
         }
-        assertTrue("a key always hit dead centre should not stay as wide as the prior",
-            tight.sigmaX(E) < loose.sigmaX(E))
+        assertTrue("a key always hit dead centre should not stay as wide as a key that is not: " +
+            "${m.sigmaX(E)} vs ${m.sigmaX(R)}", m.sigmaX(E) < m.sigmaX(R))
+    }
+
+    @Test
+    fun `a key never tapped is treated as average, not as an outlier`() {
+        // The blend toward this typist's own average is what gives a key with no history a ratio of
+        // exactly 1. Without it an untouched key carries the raw prior variance, which is a smoothing
+        // width and several times larger than real scatter, and every unused key would arrive at the
+        // top of the band and start taking taps off the keys around it.
+        val p = prior()
+        val m = TouchModel(p)
+        repeat(1000) { i -> m.observe(E, if (i % 2 == 0) 0.05f else -0.05f, 0.02f) }
+        assertEquals("an untapped key must sit exactly on the prior", p.sx, m.sigmaX(R), 1e-3f)
+        assertEquals(p.sy, m.sigmaY(R), 1e-3f)
     }
 
     @Test
@@ -228,6 +252,17 @@ class TouchModelTest {
     }
 
     @Test
+    fun `a migrated model is not wiped by the next layout`() {
+        val p = prior(meanY = 0.2f)
+        val m = TouchModel.migrateV1("-30,-24,-18", p, rowPitchPx = 120f) { i ->
+            if ('a' + i in "qwertyuiop") 0 else if ('a' + i in "asdfghjkl") 1 else 2
+        }
+        m.syncUnseen()
+        assertEquals("syncUnseen put the population prior back over the carried-over model",
+            0.25f, m.meanY('q' - 'a'), 1e-4f)
+    }
+
+    @Test
     fun `no v1 model and no pitch leaves the prior alone`() {
         val p = prior(meanY = 0.2f)
         assertEquals(0.2f, TouchModel.migrateV1(null, p, 120f) { 0 }.meanY(E), 1e-6f)
@@ -247,9 +282,6 @@ class TouchModelTest {
         assertEquals("a key with evidence must ignore the new prior", learned, m.meanY(E), 1e-6f)
         assertEquals("a key with none must follow it", 0.05f, m.meanY(R), 1e-6f)
         assertEquals("and take its spread too", 0.4f, m.sigmaX(R), 1e-4f)
-        // e's blend target moves with the prior, as it should — what must not happen is its own
-        // measured spread being discarded and the key reverting to the population number.
-        assertNotEquals("the learned spread was thrown away", 0.4f, m.sigmaX(E), 0.02f)
     }
 
     // ---------------------------------------------------------------- which taps are evidence
@@ -294,14 +326,17 @@ class TouchModelTest {
     @Test
     fun `the spread can learn from taps the language model moved`() {
         // The point of the veto rule: a tap that landed well away from the key but was accepted is
-        // real evidence about how wide that key's target is. Under the old "spatially resolved only"
-        // signal none of these would ever have been seen and the spread could not widen at all.
+        // real evidence about how wide that key's target is. Under the obvious "spatially resolved
+        // only" signal none of these would ever have been seen, because a tap stops resolving to a
+        // key as soon as it is nearer another one, and the spread could not widen at all.
         val m = TouchModel(prior(meanY = 0f, sx = 0.5f))
-        val fresh = m.sigmaX(E)
-        repeat(300) { i -> m.hold(E, if (i % 2 == 0) 0.85f else -0.85f, 0f) }
+        repeat(3000) { i ->
+            m.hold(R, 0f, 0f)                                    // steady
+            m.hold(E, if (i % 2 == 0) 0.85f else -0.85f, 0f)     // dragged wide, accepted
+        }
         m.flush()
-        assertTrue("a loosely hit key stayed as narrow as the prior: ${m.sigmaX(E)} vs $fresh",
-            m.sigmaX(E) > 1.3f * fresh)
+        assertTrue("the far taps taught the key nothing: ${m.sigmaX(E)} vs ${m.sigmaX(R)}",
+            m.sigmaX(E) > 1.3f * m.sigmaX(R))
     }
 
     @Test

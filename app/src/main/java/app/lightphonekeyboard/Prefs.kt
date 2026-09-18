@@ -280,8 +280,11 @@ object Prefs {
     /** The serialized per-key touch model (TouchModel.serialize). Null until the keyboard has learned. */
     fun touchModel(c: Context): String? = prefs(c).getString(KEY_TOUCH_MODEL, null)
 
-    fun setTouchModel(c: Context, value: String) =
-        prefs(c).edit().putString(KEY_TOUCH_MODEL, value).apply()
+    /** commit(), not apply(): this is written as the keyboard goes away, and an IME process is often
+     *  killed straight afterwards — a write still sitting on the async thread is a session lost. */
+    fun setTouchModel(c: Context, value: String) {
+        prefs(c).edit().putString(KEY_TOUCH_MODEL, value).commit()
+    }
 
     /** Letter arrangement: [LAYOUT_QWERTY], [LAYOUT_AZERTY], [LAYOUT_QWERTZ] or [LAYOUT_T9]. */
     fun keyLayout(c: Context): String =

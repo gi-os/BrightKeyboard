@@ -683,8 +683,7 @@ class LightKeyboardView @JvmOverloads constructor(
         setWillNotDraw(false)
         applyPrefs()
         rebuild()
-        // Note: loadTouchModel() runs in onAttachedToWindow, not here — the model is declared lower
-        // in the file, so it isn't initialized yet during this init block.
+        // Note: loadTouchModel() runs from the first real layout, not here — see its comment.
     }
 
     private val currentRows: List<List<String>>
@@ -798,6 +797,9 @@ class LightKeyboardView @JvmOverloads constructor(
      */
     private fun publishKeyGrid() {
         if (letterKeys.isEmpty()) return
+        // One width for every letter, taken from the longest row, so "a key unit" means the same thing
+        // on all three rows even though the home and bottom rows hold fewer, wider keys. Both the key
+        // grid and the touch model depend on that: it is what makes a stored model portable.
         letterKeyW = letterKeys[0].vis.width().coerceAtLeast(1f)
         rebasePrior()
         val positions = letterKeys.map { Triple(it.id[0], it.cx / letterKeyW, (it.cy - stripH) / rowPitch) }
@@ -2061,7 +2063,10 @@ class LightKeyboardView @JvmOverloads constructor(
                             stopBackspaceRepeat()
                             removeCallbacks(toolsKeyHold)
                             // The first tap already committed a char on down; retract it so the swipe
-                            // doesn't leave a stray letter behind.
+                            // doesn't leave a stray letter behind. Same as a trace: wherever the thumb
+                            // happened to start a swipe-to-hide was never aimed at a letter, so it is
+                            // no evidence about one either.
+                            touch.veto()
                             if (firstKeyRetractable) listener?.onBackspace()
                             pressed.clear()
                             invalidate()
@@ -2735,30 +2740,56 @@ class LightKeyboardView @JvmOverloads constructor(
 
     private fun resolveLetter(x: Float, y: Float, raw: PlacedKey): PlacedKey {
         if (letterKeys.isEmpty()) return raw
-        val result = resolveLetterTo(x, y, raw)
+        val home = aimedAt(x, y, raw)
+        val result = if (inCore(x, y, home)) home else resolveLetterTo(x, y, home)
         // Park it. Whether it becomes evidence depends on what the typist does next — see TouchModel.hold.
         touch.hold(result.id[0] - 'a', (x - result.cx) / letterKeyW, (y - result.cy) / rowPitch)
         return result
     }
 
-    /** The spatial × language resolution; [resolveLetter] wraps it to also learn from the tap. */
-    private fun resolveLetterTo(x: Float, y: Float, raw: PlacedKey): PlacedKey {
-        // Anchoring (Gunawardana, Paek & Meek, IUI'10): a tap in the middle half of the key it landed
-        // on types that key, whatever the language model would rather have. Without a floor like this
-        // a key-target model will overrule a deliberate, well-aimed tap, and that single kind of error
-        // annoys people more than all the ones the model prevents — the drawn key is a promise.
-        // Measured after the learned offset, i.e. against where the typist believes they touched:
-        // correcting for how a fingertip is sensed is not the same as second-guessing their aim.
-        val ri = raw.id[0] - 'a'
-        val adx = (x - raw.cx) / letterKeyW - touch.meanX(ri)
-        val ady = (y - raw.cy) / rowPitch - touch.meanY(ri)
-        if (TouchModel.anchored(adx, ady,
-                raw.vis.width() / 2f / letterKeyW, raw.vis.height() / 2f / rowPitch)) return raw
+    /**
+     * Which key the typist was aiming at: the one whose *learned* centre the tap is nearest, each key
+     * measured against its own, not against a shared average. Same quantity [inCore] then tests, so a
+     * point can never be inside one key's core while a different key has been picked.
+     *
+     * This is what makes a systematic miss fixable at all. Testing the core on the raw point would be
+     * a stronger-sounding promise and a worse keyboard: someone who lands two thirds of a row low has
+     * the key below already under their finger, so the raw point anchors to it and types it, for
+     * ever, with the model never allowed a word. TouchModel.MEAN_CLAMP bounds how far a key's centre
+     * may travel, which is what keeps this a sensor correction rather than a guess at what they meant.
+     */
+    private fun aimedAt(x: Float, y: Float, raw: PlacedKey): PlacedKey {
+        var best = raw
+        var bd2 = Float.MAX_VALUE
+        for (k in letterKeys) {
+            val i = k.id[0] - 'a'
+            val dx = (x - k.cx) / letterKeyW - touch.meanX(i)
+            val dy = (y - k.cy) / rowPitch - touch.meanY(i)
+            val d2 = dx * dx + dy * dy
+            if (d2 < bd2) { bd2 = d2; best = k }
+        }
+        return best
+    }
 
+    /**
+     * Anchoring (Gunawardana, Paek & Meek, IUI'10): a tap in the core of the key it was aimed at types
+     * that key, whatever the language model would rather have. Without a floor like this a key-target
+     * model will overrule a deliberate, well-aimed tap, and that one kind of error annoys people more
+     * than all the ones the model prevents — the drawn key is a promise.
+     */
+    private fun inCore(x: Float, y: Float, home: PlacedKey): Boolean {
+        val i = home.id[0] - 'a'
+        return TouchModel.anchored(
+            (x - home.cx) / letterKeyW - touch.meanX(i), (y - home.cy) / rowPitch - touch.meanY(i),
+            home.vis.width() / 2f / letterKeyW, home.vis.height() / 2f / rowPitch)
+    }
+
+    /** The spatial × language resolution, for taps outside any key's core. */
+    private fun resolveLetterTo(x: Float, y: Float, home: PlacedKey): PlacedKey {
         val model = charModel
         val ctx = if (model != null) contextSymbols() else null
         val radius2 = radiusFrac * radiusFrac
-        var best = raw
+        var best = home
         var bestScore = -Float.MAX_VALUE
         for (k in letterKeys) {
             val i = k.id[0] - 'a'
@@ -2798,26 +2829,37 @@ class LightKeyboardView @JvmOverloads constructor(
             val i = k.id[0] - 'a'
             if (i in 0 until TouchModel.N) touchPrior.meanY[i] = rowMeanPrior[rowOf(k)]
         }
+        loadTouchModel()     // the first layout is the earliest point the model can be read correctly
         touch.syncUnseen()
     }
 
-    /** Restore the learned model, carrying a v1 per-row pixel model over the first time. */
+    private var touchModelLoaded = false
+
+    /**
+     * Restore the learned model, carrying a v1 per-row pixel model over the first time.
+     *
+     * Called from [rebasePrior] rather than from onAttachedToWindow, and [saveTouchModel] refuses to
+     * write until it has run. Both matter. The IME calls reset() from onStartInputView, which happens
+     * **before** the view is attached, so a save-on-reset would write a blank model over a real one on
+     * every cold start and the keyboard would never learn anything past one process lifetime. And
+     * onAttachedToWindow is before measure and layout, so there is no geometry there to read a v1
+     * pixel model against — every letter would have been given the middle row's offset.
+     */
     private fun loadTouchModel() {
+        if (touchModelLoaded || letterKeys.isEmpty()) return
+        touchModelLoaded = true
         val saved = Prefs.touchModel(context)
         if (saved != null) {
             touch.copyFrom(TouchModel.parse(saved, touchPrior))
-            touch.syncUnseen()   // a key they have never used follows whatever the layout is now
-            savedTouchModel = touch.serialize()
+            savedTouchModel = saved
             return
         }
-        val v1 = Prefs.touchOffsets(context)
-        if (v1 != null) {
-            touch.copyFrom(TouchModel.migrateV1(v1, touchPrior, rowPitch) { i ->
-                letterKeys.firstOrNull { it.id[0] - 'a' == i }?.let { rowOf(it) } ?: 1
-            })
-            Prefs.clearTouchOffsets(context)
-            saveTouchModel()
-        }
+        val v1 = Prefs.touchOffsets(context) ?: return
+        touch.copyFrom(TouchModel.migrateV1(v1, touchPrior, rowPitch) { i ->
+            letterKeys.firstOrNull { it.id[0] - 'a' == i }?.let { rowOf(it) } ?: 1
+        })
+        Prefs.clearTouchOffsets(context)
+        saveTouchModel()
     }
 
     private var savedTouchModel: String? = null
@@ -2825,6 +2867,7 @@ class LightKeyboardView @JvmOverloads constructor(
     /** reset() runs on every field the typist moves to, so this is called far more often than the
      *  model actually changes; writing a kilobyte of prefs each time would be for nothing. */
     private fun saveTouchModel() {
+        if (!touchModelLoaded) return   // never write a fresh model over one that has not been read
         touch.flush()   // a tap the typist left standing when they closed the field was accepted
         val s = touch.serialize()
         if (s == savedTouchModel) return
@@ -2972,11 +3015,6 @@ class LightKeyboardView @JvmOverloads constructor(
         layer = if (numeric) Layer.SYMBOLS else Layer.LETTERS
         shifted = Prefs.autoCapitalize(context)
         capsLock = false; listening = false; rebuild()
-    }
-
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        loadTouchModel()   // safe here: construction is complete, so the model field exists
     }
 
     override fun onDetachedFromWindow() {
