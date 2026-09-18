@@ -898,11 +898,6 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         refreshPanelSearch()
     }
 
-    /** A hold on a GIF starred or unstarred it. Said out loud, or the hold has no visible result. */
-    override fun onGifStarred(starred: Boolean) {
-        keyboard?.flash(getString(if (starred) R.string.gif_starred else R.string.gif_unstarred))
-    }
-
     override fun onGifSearch() {
         searchKind = SearchKind.GIF
         panelQuery = StringBuilder()

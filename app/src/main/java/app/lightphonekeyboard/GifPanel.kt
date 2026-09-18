@@ -14,8 +14,8 @@ import app.lightphonekeyboard.api.KlipyKey
 import app.lightphonekeyboard.text.Gif
 import app.lightphonekeyboard.text.GifJson
 import java.net.HttpURLConnection
-import java.nio.ByteBuffer
 import java.net.URL
+import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 
 /**
@@ -101,7 +101,10 @@ class GifPanel(private val context: Context) {
      */
     private val movies = object : LruCache<String, Drawable>(MOVIE_CACHE) {
         override fun entryRemoved(evicted: Boolean, key: String, old: Drawable, new: Drawable?) {
-            stop(old)
+            // Posted, never called here. An eviction happens inside put(), which runs on the decode
+            // thread, and stop() touches the same native object the UI thread may be inside draw()
+            // on. A native race files no crash report — it takes the process with it silently.
+            main.post { stop(old) }
         }
     }
 
@@ -163,7 +166,12 @@ class GifPanel(private val context: Context) {
         state = State.LOADING
         results = emptyList()
         message = null
-        synchronized(inFlight) { failedThumbs.clear() }   // one monitor guards both sets
+        synchronized(inFlight) {
+            // Both failure sets, and both bounded. Cleared on every new search so a blip demotes a
+            // GIF to a still frame for one search rather than for the life of the process.
+            failedThumbs.clear()
+            notAnimatable.clear()
+        }
         announce()
         val mine = generation.incrementAndGet()
         val customer = Prefs.gifCustomerId(context)
@@ -204,16 +212,22 @@ class GifPanel(private val context: Context) {
      */
     private fun withRecents(query: String, fetched: List<Gif>): List<Gif> {
         if (query.isNotBlank()) return fetched
-        val mine = starred() + recents().filterNot { r -> starred().any { it.id == r.id } }
+        val star = starred()
+        val starIds = star.mapTo(HashSet()) { it.id }
+        val mine = star + recents().filterNot { it.id in starIds }
         if (mine.isEmpty()) return fetched
         val seen = mine.mapTo(HashSet()) { it.id }
         return mine + fetched.filterNot { it.id in seen }
     }
 
-    /** Only the starred ones, for the filter on the page. No network at all. */
+    /**
+     * Only the starred ones, for the filter on the page. **No network at all**, which is the part
+     * worth having on a keyboard: it is the one view that works with the radio off.
+     */
     fun showStarredOnly() {
         synchronized(lock) {
             generation.incrementAndGet()   // whatever is in flight no longer owns the page
+            covered = Covered(query, results, state, message)
             query = ""
             results = starred()
             state = if (results.isEmpty()) State.EMPTY else State.READY
@@ -221,6 +235,35 @@ class GifPanel(private val context: Context) {
         }
         announce()
     }
+
+    /**
+     * Put back whatever the starred filter covered.
+     *
+     * Not a fresh trending fetch, which is what this used to do: switching the filter on and off
+     * threw away the search the user was looking at, and cost a request to do it. Falls back to
+     * loading when there is nothing remembered, which is only the case before anything has loaded.
+     */
+    fun restore() {
+        val was = synchronized(lock) { covered.also { covered = null } }
+        if (was == null) { open(); return }
+        synchronized(lock) {
+            generation.incrementAndGet()
+            query = was.query
+            results = was.results
+            state = was.state
+            message = was.message
+        }
+        announce()
+    }
+
+    private class Covered(
+        val query: String,
+        val results: List<Gif>,
+        val state: State,
+        val message: String?,
+    )
+
+    private var covered: Covered? = null
 
     /** Put the page into a failed state from outside — the insert failing is not a search failing. */
     fun failed(reason: String) {
@@ -242,30 +285,16 @@ class GifPanel(private val context: Context) {
     fun thumbnail(url: String): Bitmap? {
         if (url.isBlank()) return null
         thumbs.get(url)?.let { return it }
-        synchronized(inFlight) {
-            if (url in failedThumbs) return null
-            if (!inFlight.add(url)) return null
-        }
-        thumbWork.execute {
-            val bitmap = fetchFrame(url)
-            // Cached BEFORE the in-flight mark is dropped. The other way round, a draw landing in
-            // between finds neither a bitmap nor a claim and starts the same download again.
-            if (bitmap != null) thumbs.put(url, bitmap)
-            synchronized(inFlight) {
-                inFlight.remove(url)
-                if (bitmap == null && failedThumbs.size < MAX_FAILED) failedThumbs.add(url)
-            }
-            if (bitmap != null) announce()
-        }
+        ensureLoaded(url)
         return null
     }
 
     /**
      * The running animation for [url], or null when there is not one to draw yet.
      *
-     * Starts the decode on a miss and returns null, exactly like [thumbnail] — this is called from
-     * the draw pass, and the repaint when it lands is what puts it on screen. Until then the cell
-     * draws the still frame, so a page fills in rather than sitting blank.
+     * Starts the load on a miss and returns null, exactly like [thumbnail] — both are called from
+     * the draw pass, and the repaint when it lands is what puts the result on screen. Until then the
+     * cell draws the still frame, so a page fills in rather than sitting blank.
      *
      * The caller owns starting it and giving it somewhere to invalidate; a drawable with no callback
      * cannot schedule its own next frame. See `LightKeyboardView.drawGif`.
@@ -273,25 +302,44 @@ class GifPanel(private val context: Context) {
     fun animation(url: String): Drawable? {
         if (url.isBlank() || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
         movies.get(url)?.let { return it }
-        synchronized(inFlight) {
-            if (url in notAnimatable || url in failedThumbs) return null
-            if (!inFlight.add(ANIM_PREFIX + url)) return null
-        }
-        thumbWork.execute {
-            val drawable = decodeAnimation(url)
-            if (drawable != null) movies.put(url, drawable)
-            synchronized(inFlight) {
-                inFlight.remove(ANIM_PREFIX + url)
-                if (drawable == null) notAnimatable.add(url)
-            }
-            if (drawable != null) announce()
-        }
+        ensureLoaded(url)
         return null
     }
 
-    private fun decodeAnimation(url: String): Drawable? = runCatching {
+    /**
+     * Fetch [url] once and fill both caches from the same bytes.
+     *
+     * **One download per GIF.** [thumbnail] and [animation] are asked about the same cell in the
+     * same draw pass, and when each fetched for itself every GIF on the page was downloaded twice,
+     * at up to 3 MB a time, on a page whose whole argument is that it is frugal.
+     */
+    private fun ensureLoaded(url: String) {
+        synchronized(inFlight) {
+            if (url in failedThumbs && url in notAnimatable) return
+            if (!inFlight.add(url)) return
+        }
+        thumbWork.execute {
+            val bytes = fetchBytes(url)
+            val movie = bytes?.let { decodeAnimation(it) }
+            val still = bytes?.let { decodeFrame(it) }
+            // Cached BEFORE the in-flight mark is dropped. The other way round, a draw landing in
+            // between finds neither a result nor a claim and starts the same download again.
+            if (movie != null) movies.put(url, movie)
+            if (still != null) thumbs.put(url, still)
+            synchronized(inFlight) {
+                inFlight.remove(url)
+                if (movie == null && notAnimatable.size < MAX_FAILED) notAnimatable.add(url)
+                if (still == null && failedThumbs.size < MAX_FAILED) failedThumbs.add(url)
+            }
+            if (movie != null || still != null) announce()
+        }
+    }
+
+    private fun decodeAnimation(bytes: ByteArray): Drawable? = runCatching {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
-        val bytes = fetchBytes(url) ?: return null
+        // A GIF big enough to be worth worrying about is drawn as a still instead. Every frame of a
+        // running animation is held in memory, and a cache bounded by entry count cannot see that.
+        if (bytes.size > MAX_ANIMATED_BYTES) return null
         val source = ImageDecoder.createSource(ByteBuffer.wrap(bytes))
         val drawable = ImageDecoder.decodeDrawable(source) { decoder, info, _ ->
             // Sampled down on the way in, like the still frame: a preview rendition is bigger than a
@@ -324,7 +372,6 @@ class GifPanel(private val context: Context) {
         return sample
     }
 
-    /** The first frame of the GIF at [url], scaled down to something a cell can use. */
     /** The bytes of [url], capped. Shared by the still frame and the animation. */
     private fun fetchBytes(url: String): ByteArray? = runCatching {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -342,8 +389,8 @@ class GifPanel(private val context: Context) {
         null
     }
 
-    private fun fetchFrame(url: String): Bitmap? = runCatching {
-        val bytes = fetchBytes(url) ?: return@runCatching null
+    /** The first frame, scaled down to something a cell can use. */
+    private fun decodeFrame(bytes: ByteArray): Bitmap? = runCatching {
         // Measured first, then decoded at a sample size: a preview rendition is still bigger than
         // a cell on this screen, and decoding it at full size to draw it at a sixth is most of the
         // memory this class would ever use.
@@ -361,7 +408,7 @@ class GifPanel(private val context: Context) {
             },
         )
     }.getOrElse {
-        Log.w(TAG, "could not fetch a thumbnail", it)
+        Log.w(TAG, "could not decode a still frame", it)
         null
     }
 
@@ -383,8 +430,6 @@ class GifPanel(private val context: Context) {
 
     /** The starred ones, newest star first. Never evicted by use — only by being unstarred. */
     fun starred(): List<Gif> = GifJson.decode(Prefs.starredGifs(context))
-
-    fun isStarred(id: String): Boolean = starred().any { it.id == id }
 
     /** Star or unstar [gif]. Returns true when it is now starred. */
     fun toggleStar(gif: Gif): Boolean {
@@ -411,8 +456,9 @@ class GifPanel(private val context: Context) {
         const val THUMB_CACHE_KB = 6 * 1024
         const val MAX_THUMB_BYTES = 3 * 1024 * 1024
 
-        /** Marks an animation's in-flight claim, so it does not collide with the still frame's. */
-        const val ANIM_PREFIX = "anim:"
+        /** A GIF above this is drawn as a still. Every frame of a running one is held in memory,
+         *  and a cache bounded by entry count cannot see that. */
+        const val MAX_ANIMATED_BYTES = 1_500_000
         const val TARGET_PX = 240
         const val RECENTS = 12
 
@@ -420,7 +466,7 @@ class GifPanel(private val context: Context) {
         const val STARRED = 60
 
         /** Animations held at once. A page's worth and a little, so a page turn back is instant. */
-        const val MOVIE_CACHE = 16
+        const val MOVIE_CACHE = 12
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 20_000
 

@@ -139,8 +139,6 @@ class LightKeyboardView @JvmOverloads constructor(
         /** The search key on the GIF page: the letters come back and the strip shows the query. */
         fun onGifSearch()
 
-        /** A GIF was starred or unstarred by a hold, so the keyboard can say which. */
-        fun onGifStarred(starred: Boolean)
         /** Listening surface tapped — cancel dictation. */
         fun onMicCancel()
 
@@ -1150,7 +1148,10 @@ class LightKeyboardView @JvmOverloads constructor(
         showingStarred = on
         gifPage = 0
         refreshStarred()
-        if (on) gifPanel.showStarredOnly() else gifPanel.open()
+        // Turning it off puts back whatever was on screen before, search and all. Calling open()
+        // here re-ran trending instead, so switching the filter on and off silently threw away the
+        // search the user was looking at.
+        if (on) gifPanel.showStarredOnly() else gifPanel.restore()
         rebuild()
     }
 
@@ -1171,6 +1172,7 @@ class LightKeyboardView @JvmOverloads constructor(
     fun gifInsertFailed() {
         gifPanel.failed(context.getString(R.string.gif_insert_failed))
         gifPage = 0
+        showingStarred = false
         layer = Layer.GIFS
         rebuild()
     }
@@ -1178,6 +1180,10 @@ class LightKeyboardView @JvmOverloads constructor(
     /** Put the panel back showing [query]'s results. The search flow calls this, like the emoji one. */
     fun showGifSearch(query: String) {
         gifPage = 0
+        // A search is not the starred list, whatever the key was showing a moment ago. Left set, it
+        // lit the star key over unstarred results and answered an empty search with "nothing
+        // starred yet".
+        showingStarred = false
         layer = Layer.GIFS
         gifPanel.search(query)
         rebuild()
@@ -1414,7 +1420,8 @@ class LightKeyboardView @JvmOverloads constructor(
         for (pk in placed) {
             val down = pk.id != Key.CLIP_BLANK && (
                 pressed.containsValue(pk) ||
-                    (pressedEmojiCell >= 0 && pk.id == Key.emojiCell(pressedEmojiCell))
+                    (pressedEmojiCell >= 0 && pk.id == Key.emojiCell(pressedEmojiCell)) ||
+                    (pressedGifCell >= 0 && pk.id == Key.gifCell(pressedGifCell))
                 )
             if (down) {
                 val r = dpf(8)
@@ -2341,19 +2348,8 @@ class LightKeyboardView @JvmOverloads constructor(
     /** The pad keys a trace has crossed, as digits. Empty except while tracing on the keypad. */
     private val tracedDigits = StringBuilder(MAX_TRACED_DIGITS)
 
-    // ------------------------------------------------------------------ emoji touch
+    // ------------------------------------------------------------------ grid touch
 
-    /**
-     * The emoji grid's own touch handling, which is not the keyboard's.
-     *
-     * Everywhere else in this view a key commits on touch-DOWN, and the comment at the top of the
-     * file explains why: it removes latency and stops letters being dropped when a finger rolls off
-     * a key while typing fast. The emoji grid has to do the opposite, because the same gesture that
-     * picks an emoji is also the one that scrolls 220 rows of them. So a cell here commits on the
-     * lift, and only if the finger did not travel far enough to be a scroll.
-     *
-     * Returns true when the event was the grid's, so the rest of [onTouchEvent] leaves it alone.
-     */
     /**
      * The GIF grid's own touches: a tap inserts, a hold stars.
      *
@@ -2369,10 +2365,21 @@ class LightKeyboardView @JvmOverloads constructor(
         if (layer != Layer.GIFS) return false
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                // Above the grid is the suggestion strip, which owns its own taps. [findKey] answers
+                // an uncovered point with the *nearest* key centre — the behaviour that makes a
+                // mis-tap between two letters land on the one you meant — so without this a tap on
+                // the strip resolved to the nearest GIF and the lift sent it into the conversation.
+                if (ev.y < stripTop) return false
                 val key = findKey(ev.x, ev.y)
                 if (key == null || !Key.isGifCell(key.id)) return false
+                val index = Key.gifCellIndex(key.id)
+                // The GIF itself, not its index. The index is a position in a list the network
+                // thread replaces, so a search landing during the press would star or send whatever
+                // had moved into that slot rather than what is under the finger.
+                gifPressed = gifs.getOrNull(index) ?: return false
+                gifOwnsGesture = true
                 gifPointerId = ev.getPointerId(0)
-                pressedGifCell = Key.gifCellIndex(key.id)
+                pressedGifCell = index
                 gifHoldFired = false
                 gifDownX = ev.x
                 gifDownY = ev.y
@@ -2382,26 +2389,39 @@ class LightKeyboardView @JvmOverloads constructor(
                 return true
             }
 
+            // Every event of a gesture this path claimed stays with it, right through to the lift.
+            // Handing the tail of one back mid-drag gives the generic handler a stale downY and
+            // downTime from a previous, differently sized layer — which reads as a downward flick
+            // and closes the keyboard, taking a character with it.
             MotionEvent.ACTION_MOVE -> {
-                if (pressedGifCell < 0) return false
-                // A finger that wandered off the cell is not choosing it any more. The slop is a
-                // key's worth, because the cells are large and a thumb moves while it presses.
-                val dx = ev.x - gifDownX
-                val dy = ev.y - gifDownY
-                if (dx * dx + dy * dy > gifMoveSlop * gifMoveSlop) clearGifGesture()
+                if (!gifOwnsGesture) return false
+                if (pressedGifCell >= 0) {
+                    val dx = ev.x - gifDownX
+                    val dy = ev.y - gifDownY
+                    // Half a cell. A cell is a third of the screen wide and a thumb travels while
+                    // it presses, so a key's worth of slop cancelled taps that never left the
+                    // picture they were on.
+                    val slop = gifCellSlop()
+                    if (dx * dx + dy * dy > slop * slop) cancelGifPress()
+                }
                 return true
             }
 
-            MotionEvent.ACTION_POINTER_DOWN -> return pressedGifCell >= 0
+            MotionEvent.ACTION_POINTER_DOWN -> return gifOwnsGesture
 
             MotionEvent.ACTION_POINTER_UP -> {
-                if (ev.getPointerId(ev.actionIndex) != gifPointerId) return pressedGifCell >= 0
+                if (!gifOwnsGesture) return false
+                if (ev.getPointerId(ev.actionIndex) != gifPointerId) return true
                 return finishGifGesture()
             }
 
-            MotionEvent.ACTION_UP -> return finishGifGesture()
+            MotionEvent.ACTION_UP -> {
+                if (!gifOwnsGesture) return false
+                return finishGifGesture()
+            }
 
             MotionEvent.ACTION_CANCEL -> {
+                if (!gifOwnsGesture) return false
                 clearGifGesture()
                 return true
             }
@@ -2411,21 +2431,27 @@ class LightKeyboardView @JvmOverloads constructor(
 
     /** The lift. Inserts unless the hold already turned this press into a star. */
     private fun finishGifGesture(): Boolean {
-        val cell = pressedGifCell
+        val gif = gifPressed
         val fired = gifHoldFired
         clearGifGesture()
-        if (cell < 0 || fired) return true
-        val gif = gifs.getOrNull(cell) ?: return true
+        if (gif == null || fired) return true
         tap()
         gifPanel.remember(gif)
         listener?.onGif(gif.sendUrl, gif.label, gif.id)
         return true
     }
 
-    private fun clearGifGesture() {
+    /** The finger wandered off. The press is over, but the gesture is still ours until it lifts. */
+    private fun cancelGifPress() {
         removeCallbacks(gifHold)
-        if (pressedGifCell >= 0) invalidate()
         pressedGifCell = -1
+        gifPressed = null
+        invalidate()
+    }
+
+    private fun clearGifGesture() {
+        cancelGifPress()
+        gifOwnsGesture = false
         gifPointerId = -1
     }
 
@@ -2437,22 +2463,37 @@ class LightKeyboardView @JvmOverloads constructor(
      * for later is asking for.
      */
     private val gifHold = Runnable {
-        val gif = gifs.getOrNull(pressedGifCell) ?: return@Runnable
+        val gif = gifPressed ?: return@Runnable
         gifHoldFired = true
-        val starred = gifPanel.toggleStar(gif)
+        gifPanel.toggleStar(gif)
         refreshStarred()
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-        listener?.onGifStarred(starred)
         invalidate()
     }
 
+    /** Half a cell, or a key's worth before the first layout. */
+    private fun gifCellSlop(): Float =
+        ((contentW - padSide * 2) / GIF_COLS / 2f).coerceAtLeast(dpf(24))
+
     private var pressedGifCell = -1
+    private var gifPressed: app.lightphonekeyboard.text.Gif? = null
+    private var gifOwnsGesture = false
     private var gifPointerId = -1
     private var gifHoldFired = false
     private var gifDownX = 0f
     private var gifDownY = 0f
-    private val gifMoveSlop = dpf(24)
 
+    /**
+     * The emoji grid's own touch handling, which is not the keyboard's.
+     *
+     * Everywhere else in this view a key commits on touch-DOWN, and the comment at the top of the
+     * file explains why: it removes latency and stops letters being dropped when a finger rolls off
+     * a key while typing fast. The emoji grid has to do the opposite, because the same gesture that
+     * picks an emoji is also the one that scrolls 220 rows of them. So a cell here commits on the
+     * lift, and only if the finger did not travel far enough to be a scroll.
+     *
+     * Returns true when the event was the grid's, so the rest of [onTouchEvent] leaves it alone.
+     */
     private fun onEmojiTouch(ev: MotionEvent): Boolean {
         if (layer != Layer.EMOJI) return false
         when (ev.actionMasked) {
