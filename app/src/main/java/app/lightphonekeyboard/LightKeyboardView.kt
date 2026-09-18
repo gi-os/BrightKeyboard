@@ -474,6 +474,8 @@ class LightKeyboardView @JvmOverloads constructor(
         // to letters paints a black band over the second key row that nothing can clear.
         variantGlyphs = emptyList()
         clearEmojiGesture()
+        removeCallbacks(clearFlash)
+        flashMessage = null
         keyLayout = Prefs.keyLayout(context)
         autoPeriod = Prefs.autoPeriod(context)
         swipeTyping = Prefs.swipeTyping(context)
@@ -616,6 +618,28 @@ class LightKeyboardView @JvmOverloads constructor(
     private var pressedSuggestion = -1
     /** Height of the strip, or 0 when it isn't shown. Everything below shifts down by this. */
     private var stripH = 0f
+
+    /**
+     * The strip's height when it is shown at all, so [setSearchQuery] and [flash] can restore it.
+     *
+     * Declared **above** the `init` block on purpose, with everything else [applyPrefs] writes.
+     * Kotlin runs property initializers and init blocks in source order, and `init` calls
+     * applyPrefs — so a `var x = 0f` declared further down is assigned the right value by applyPrefs
+     * and then set straight back to zero by its own initializer. This one was, which left the strip
+     * zero-height until the first field change called applyPrefs a second time.
+     */
+    private var stripFullH = 0f
+
+    /** A line the keyboard is showing for a moment. Null the rest of the time. See [flash]. */
+    private var flashMessage: String? = null
+
+    private val clearFlash = Runnable {
+        if (flashMessage == null) return@Runnable
+        val wasShowing = stripShowing
+        flashMessage = null
+        stripH = if (stripShowing) stripFullH else 0f
+        if (wasShowing != stripShowing) rebuild() else invalidate()
+    }
     private var stripTextSize = 0f
 
     init {
@@ -1232,11 +1256,31 @@ class LightKeyboardView @JvmOverloads constructor(
     /** What the strip says before anything is typed. Null means the emoji wording. */
     private var searchHint: String? = null
 
-    /** The strip's height when it is shown at all, so [setSearchQuery] can restore it. */
-    private var stripFullH = 0f
+    /**
+     * The strip is up for the suggestions setting, because a search needs somewhere to appear, or
+     * because the keyboard has something brief to say. See [flash].
+     */
+    private val stripShowing: Boolean get() = suggestionsOn || searchQuery != null || flashMessage != null
 
-    /** The strip is up for the suggestions setting, or because a search needs somewhere to appear. */
-    private val stripShowing: Boolean get() = suggestionsOn || searchQuery != null
+    /**
+     * Say something for a couple of seconds, in the strip.
+     *
+     * A keyboard has nowhere to put a message. It cannot show a dialog, a toast from an IME is
+     * unreliable on modern Android, and the field belongs to the user — writing into it is the one
+     * thing this must never do. The suggestion strip is the only surface the keyboard owns, so it
+     * borrows it, exactly as an emoji search does, and gives it back.
+     *
+     * Used when a GIF could not be handed to the field and went to the clipboard instead. Without
+     * it that is a tap with no visible result, which reads as a keyboard that ignored you.
+     */
+    fun flash(message: String) {
+        removeCallbacks(clearFlash)
+        val wasShowing = stripShowing
+        flashMessage = message
+        stripH = if (stripShowing) stripFullH else 0f
+        if (wasShowing != stripShowing) rebuild() else invalidate()
+        postDelayed(clearFlash, FLASH_MS)
+    }
 
     /** Put the panel back on screen showing [query]'s results. Used by the search flow. */
     fun showEmojiSearch(query: String) {
@@ -1294,6 +1338,14 @@ class LightKeyboardView @JvmOverloads constructor(
      * as soon as a word became suggestible. Its height is fixed for as long as the setting is on.
      */
     private fun drawStrip(canvas: Canvas) {
+        // A message outranks everything: it is here for two seconds and it is the only thing the
+        // keyboard has to say.
+        flashMessage?.let { message ->
+            textPaint.textSize = stripTextSize
+            val baseline = stripH / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
+            canvas.drawText(fitToWidth(message, width - dpf(20)), width / 2f, baseline, textPaint)
+            return
+        }
         // While a search is running the strip is the only place the query can be read, because the
         // query is deliberately kept out of the document. It takes the whole strip, not a slot.
         searchQuery?.let { q ->
@@ -2674,6 +2726,9 @@ class LightKeyboardView @JvmOverloads constructor(
 
         /** Share of the screen the keys keep when narrowed to one hand. */
         const val ONE_HANDED_FRACTION = 0.80f
+
+        /** How long a [flash] message stays. Long enough to read a short line, and no longer. */
+        const val FLASH_MS = 2200L
 
         /** Cap on recorded trace points. A word trace across this keyboard is a few dozen; the cap is
          *  a guard against a finger held down for a very long time, not a normal limit. */

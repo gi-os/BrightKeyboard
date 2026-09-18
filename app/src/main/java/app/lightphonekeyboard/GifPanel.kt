@@ -74,9 +74,8 @@ class GifPanel(private val context: Context) {
         Thread(r, "light-kb-gif-thumbs").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
 
-    /** Debounce, so a five-letter query is one request rather than four abandoned ones. */
+    /** Everything here happens off the keyboard's thread; this is how it gets back. */
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
-    private var pending: Runnable? = null
 
     /**
      * Decoded thumbnails, by URL. Sized in kilobytes rather than entries, because the whole risk
@@ -112,20 +111,26 @@ class GifPanel(private val context: Context) {
     private fun key(): String =
         Prefs.klipyKey(context).ifBlank { KlipyKey.builtIn }
 
-    /** Open on trending, or re-run the last query. Immediate: this one is a deliberate tap. */
+    /** Open on trending, or re-run the last query. */
     fun open() {
-        load(query, 0L)
+        load(query)
     }
 
-    /** A letter was typed. Debounced — see [DEBOUNCE_MS]. */
+    /**
+     * Run a search.
+     *
+     * No debounce, and none is needed: a search happens when the return key is pressed and not
+     * before, so every call here is one the user deliberately asked for. This used to fire on every
+     * letter, which is what a debounce was hiding — four requests for a five-letter word, three of
+     * them abandoned, and the one that mattered queued behind them.
+     */
     fun search(text: String) {
-        load(text, DEBOUNCE_MS)
+        load(text)
     }
 
-    private fun load(text: String, delayMs: Long) {
+    private fun load(text: String) {
         val k = key()
         query = text
-        pending?.let { main.removeCallbacks(it) }
         if (k.isBlank()) {
             state = State.NO_KEY
             results = emptyList()
@@ -139,35 +144,31 @@ class GifPanel(private val context: Context) {
         announce()
         val mine = generation.incrementAndGet()
         val customer = Prefs.gifCustomerId(context)
-        val go = Runnable {
-            searchWork.execute {
-                val outcome = runCatching {
-                    val api = KlipyApi(k)
-                    if (text.isBlank()) api.trending(customerId = customer)
-                    else api.search(text, customerId = customer)
-                }
-                // A search the user has already moved on from must not overwrite the one they are
-                // waiting for. The check and the publish are one step: between them, another
-                // keystroke can start a newer search whose LOADING state this would then erase.
-                synchronized(lock) {
-                    if (mine != generation.get()) return@execute
-                    outcome.onSuccess { page ->
-                        results = withRecents(text, page.gifs)
-                        state = if (results.isEmpty()) State.EMPTY else State.READY
-                        message = null
-                    }.onFailure { e ->
-                        results = emptyList()
-                        state = State.FAILED
-                        message = (e as? app.lightphonekeyboard.api.ApiException)?.reason
-                            ?: context.getString(R.string.gif_failed)
-                        Log.w(TAG, "gif request failed", e)
-                    }
-                }
-                announce()
+        searchWork.execute {
+            val outcome = runCatching {
+                val api = KlipyApi(k)
+                if (text.isBlank()) api.trending(customerId = customer)
+                else api.search(text, customerId = customer)
             }
+            // A search the user has already moved on from must not overwrite the one they are
+            // waiting for. The check and the publish are one step: between them another search can
+            // start, and this would otherwise erase its LOADING state with older results.
+            synchronized(lock) {
+                if (mine != generation.get()) return@execute
+                outcome.onSuccess { page ->
+                    results = withRecents(text, page.gifs)
+                    state = if (results.isEmpty()) State.EMPTY else State.READY
+                    message = null
+                }.onFailure { e ->
+                    results = emptyList()
+                    state = State.FAILED
+                    message = (e as? app.lightphonekeyboard.api.ApiException)?.reason
+                        ?: context.getString(R.string.gif_failed)
+                    Log.w(TAG, "gif request failed", e)
+                }
+            }
+            announce()
         }
-        pending = go
-        if (delayMs <= 0L) go.run() else main.postDelayed(go, delayMs)
     }
 
     /**
@@ -282,7 +283,7 @@ class GifPanel(private val context: Context) {
 
     private fun announce() {
         val cb = onChanged ?: return
-        android.os.Handler(android.os.Looper.getMainLooper()).post { cb() }
+        main.post { cb() }
     }
 
     private companion object {
@@ -297,9 +298,6 @@ class GifPanel(private val context: Context) {
         /** Threads fetching thumbnails. Nine cells, so a few at once fill the page noticeably
          *  faster than one at a time without being a burst the phone's radio notices. */
         const val THUMB_THREADS = 3
-
-        /** How long a query waits for the next letter before it is sent. About one keystroke. */
-        const val DEBOUNCE_MS = 260L
 
         const val MAX_FAILED = 256
     }

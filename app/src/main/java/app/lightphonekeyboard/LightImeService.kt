@@ -671,7 +671,8 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     }
 
     override fun onEnter() {
-        if (searchingPanel) { endPanelSearch(); return }
+        // Return is what runs a search, not each letter. See [submitPanelSearch].
+        if (searchingPanel) { submitPanelSearch(); return }
         val ic = currentInputConnection ?: return
         if (padOpen) resetPadWord()
         settleMultiTap()
@@ -764,7 +765,15 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             val result = GifInsert.insert(this, ic, editor, url, label, id)
             if (result != GifInsert.Result.FAILED) GifInsert.reportUse(this, id)
             mainHandler.post {
-                if (result == GifInsert.Result.FAILED) keyboard?.gifInsertFailed()
+                when (result) {
+                    // It went in as a picture. Nothing to say — the field says it.
+                    GifInsert.Result.INSERTED -> Unit
+                    // This field takes no images, which is most of them. Saying so is the whole
+                    // point: otherwise the tap looks ignored, and the GIF is sitting on the
+                    // clipboard where nobody knows to look for it.
+                    GifInsert.Result.COPIED -> keyboard?.flash(getString(R.string.gif_copied))
+                    GifInsert.Result.FAILED -> keyboard?.gifInsertFailed()
+                }
             }
         }
     }
@@ -900,12 +909,16 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     }
 
     /**
-     * Feed the current query to the panel.
+     * Show the query in the strip. **Does not search.**
      *
-     * The panel is shown as soon as the query is long enough to mean anything, and the letters stay
-     * up below the shortest queries so there is something to type on. Both states keep the query
-     * visible in the strip, which is the only place the user can see what they have typed — it is
-     * not in the document, by design.
+     * Searching on every letter was wrong in both panels and wrong for different reasons. For emoji
+     * the grid reshuffled under the thumb as the word was still being typed, so the target you were
+     * reaching for moved. For GIFs every keystroke was a network request, three of which were
+     * abandoned before the one that mattered. Neither is what "search" means anywhere else: you
+     * type the whole thing, then you ask.
+     *
+     * So the letters stay up and the strip shows what has been typed — the only place it can be
+     * seen, since it is deliberately kept out of the document — and [submitPanelSearch] runs it.
      */
     private fun refreshPanelSearch() {
         val q = panelQuery?.toString() ?: return
@@ -915,38 +928,60 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             SearchKind.GIF -> app.lightphonekeyboard.api.KlipyApi.SEARCH_HINT
         }
         kb.setSearchQuery(q, hint)
-        val minimum = when (searchKind) {
-            SearchKind.EMOJI -> app.lightphonekeyboard.text.Emoji.MIN_QUERY
-            // Two letters, against emoji's own minimum. A GIF search is a network round trip, so
-            // the cost of firing one early is a request rather than a scan of a bundled table —
-            // but "ok" and "hi" are real searches and a higher floor would refuse them.
-            SearchKind.GIF -> GIF_MIN_QUERY
-        }
-        if (q.length >= minimum) {
-            when (searchKind) {
-                SearchKind.EMOJI -> kb.showEmojiSearch(q)
-                SearchKind.GIF -> kb.showGifSearch(q)
+        kb.showLetters()
+    }
+
+    /**
+     * Run the query and show the panel. The return key, and nothing else, gets here.
+     *
+     * The borrowed keys are handed back at the same moment, because the panel is about to take
+     * their place on screen — there is one keyboard's worth of room, not two. Refining a search
+     * therefore means pressing the panel's own search key again, which is the same number of taps
+     * as reaching for a backspace would have been.
+     *
+     * An empty query is not a search; it puts the panel back as it was, which is what somebody who
+     * pressed return by mistake wants.
+     */
+    private fun submitPanelSearch() {
+        val q = panelQuery?.toString().orEmpty().trim()
+        val kind = searchKind
+        endPanelSearch()
+        val kb = keyboard ?: return
+        if (q.isEmpty()) {
+            when (kind) {
+                SearchKind.EMOJI -> kb.showEmojiSearch("")
+                SearchKind.GIF -> kb.showGifSearch("")
             }
-        } else {
-            kb.showLetters()
+            return
+        }
+        when (kind) {
+            SearchKind.EMOJI -> kb.showEmojiSearch(q)
+            SearchKind.GIF -> kb.showGifSearch(q)
         }
     }
 
     /**
-     * A key pressed while a search is running. Returns true when the search consumed it.
+     * A key pressed while a search is running. Returns true when the query consumed it.
      *
-     * Only letters and backspace belong to the query. Everything else is the user saying they are
-     * done — a space or a return in particular, which are what somebody presses when they have given
-     * up on finding an emoji and want to carry on writing.
+     * Letters, digits and spaces are the query; backspace edits it ([onBackspace]); return runs it
+     * ([submitPanelSearch]). Anything else — punctuation, a layer change — is the user saying they
+     * are done, and it reaches the document as it normally would.
+     *
+     * A **space used to end the search**, back when every letter searched and there was no way to
+     * say "now". It cannot any more: "happy birthday" and "thank you" are the searches people
+     * actually type, and refusing the space would have made them unreachable.
      */
     private fun panelSearchKey(s: String): Boolean {
         val q = panelQuery ?: return false
-        // Space first and on its own. Folded into the letter test it read as one condition and was
-        // not: `&&` binds tighter than `||`, so a space typed against an empty query fell through
-        // and reached the document, while a space against a non-empty one did not.
-        if (s == " ") { endPanelSearch(); return true }
-        if (s.length == 1 && s[0].isLetter()) {
-            q.append(s.lowercase())
+        if (s.length != 1) { endPanelSearch(); return false }
+        val c = s[0]
+        // A leading space is nothing, and two in a row are a typo; neither belongs in a query.
+        if (c == ' ') {
+            if (q.isNotEmpty() && !q.endsWith(' ')) { q.append(' '); refreshPanelSearch() }
+            return true
+        }
+        if (c.isLetterOrDigit()) {
+            q.append(c.lowercaseChar())
             refreshPanelSearch()
             return true
         }
@@ -1744,8 +1779,6 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         /** Below this a word is too short to name anything, and the emoji slot stays a word slot. */
         const val EMOJI_SUGGEST_MIN = 3
 
-        /** Shortest GIF search that is sent. "ok" and "hi" are real searches; one letter is not. */
-        const val GIF_MIN_QUERY = 2
 
         /** Readings to keep for the keypad word in progress, for the delete key to walk afterwards. */
         const val PAD_READINGS = 6

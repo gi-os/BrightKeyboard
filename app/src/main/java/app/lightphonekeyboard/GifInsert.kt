@@ -1,6 +1,8 @@
 package app.lightphonekeyboard
 
+import android.content.ClipData
 import android.content.ClipDescription
+import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
 import android.util.Log
@@ -19,17 +21,24 @@ import java.net.URL
  *
  * ## Why this is not just "commit the image"
  *
- * A keyboard cannot hand an app a file. It can only offer one through
+ * A keyboard cannot hand an app a file. It can only *offer* one, through
  * [InputConnectionCompat.commitContent], and the app on the other side has to have said in advance
- * that it accepts the type — `EditorInfo.contentMimeTypes`. Most apps say nothing, because most
- * fields are for text. So the honest design has two outcomes and both are normal:
+ * that it accepts the type — `EditorInfo.contentMimeTypes`. There is no way around that and no
+ * second API: an app that declares nothing cannot be given an image by a keyboard, on any version
+ * of Android. So the honest design has two outcomes and both are normal:
  *
- *  - the field accepts `image/gif`, and it gets the file; or
- *  - it does not, and it gets the **link** instead, which is what every other keyboard does and
- *    what the receiving app will usually unfurl into the same GIF anyway.
+ *  - the field accepts `image/gif`, and it gets **the image**; or
+ *  - it does not, and the image goes on the **clipboard**, with the keyboard saying so, for the user
+ *    to paste wherever they meant it to go.
  *
- * Silently doing nothing when a field declines is the one outcome that would be wrong, because from
- * the user's side that is a keyboard that ignored a tap.
+ * It used to commit the *link* in the second case. That was wrong twice over: a link is not what
+ * anybody picking a GIF asked for, and it quietly turned a picture into a URL in places — a note, a
+ * search box — where the URL is no use to anyone either. The clipboard keeps it a picture, and the
+ * apps where sending a GIF actually makes sense (the messengers) are exactly the ones that declare
+ * the type, so the first outcome is the common one.
+ *
+ * Silently doing nothing is the only outcome that would be wrong, because from the user's side that
+ * is a keyboard that ignored a tap.
  *
  * ## The file
  *
@@ -40,8 +49,17 @@ import java.net.URL
  */
 object GifInsert {
 
-    /** What the picker did, so the caller can tell the user when it was not what they expected. */
-    enum class Result { FILE, LINK, FAILED }
+    /** What the picker did. The caller says so when it was not the first one. */
+    enum class Result {
+        /** Handed to the field as an image. What should happen, and does wherever the field allows. */
+        INSERTED,
+
+        /** The field takes no images, so it is on the clipboard and the user was told. */
+        COPIED,
+
+        /** Neither worked. */
+        FAILED,
+    }
 
     /**
      * Insert [gif] into [ic]. Runs on a background thread — it downloads — so the caller hands it a
@@ -56,25 +74,49 @@ object GifInsert {
         id: String = "",
     ): Result {
         if (url.isBlank()) return Result.FAILED
-        if (!accepts(editor)) return if (commitLink(ic, url)) Result.LINK else Result.FAILED
-        val file = download(ctx, url) ?: return if (commitLink(ic, url)) Result.LINK else Result.FAILED
+        // Downloaded before the field is consulted, because both outcomes need the file: one hands
+        // it over, the other puts it on the clipboard.
+        val file = download(ctx, url) ?: return Result.FAILED
         val uri = runCatching {
             FileProvider.getUriForFile(ctx, "${ctx.packageName}.gifs", file)
-        }.getOrNull() ?: return if (commitLink(ic, url)) Result.LINK else Result.FAILED
+        }.getOrNull() ?: return Result.FAILED
 
-        val info = InputContentInfoCompat(
-            uri,
-            ClipDescription(label.ifBlank { "GIF" }, arrayOf(MIME)),
-            null,
-        )
-        // The grant flag is what makes the URI readable in the other process. Without it the
-        // receiving app gets a URI it cannot open, which looks exactly like a corrupt file.
-        val ok = runCatching {
-            InputConnectionCompat.commitContent(
-                ic, editor ?: EditorInfo(), info, InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null,
+        if (accepts(editor)) {
+            val info = InputContentInfoCompat(
+                uri,
+                ClipDescription(label.ifBlank { "GIF" }, arrayOf(MIME)),
+                null,
             )
-        }.getOrDefault(false)
-        return if (ok) Result.FILE else if (commitLink(ic, url)) Result.LINK else Result.FAILED
+            // The grant flag is what makes the URI readable in the other process. Without it the
+            // receiving app gets a URI it cannot open, which looks exactly like a corrupt file.
+            val ok = runCatching {
+                InputConnectionCompat.commitContent(
+                    ic, editor ?: EditorInfo(), info,
+                    InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null,
+                )
+            }.getOrDefault(false)
+            if (ok) return Result.INSERTED
+            // Declared the type and then refused it, which happens. The clipboard is still there.
+        }
+        return if (copyToClipboard(ctx, uri, label)) Result.COPIED else Result.FAILED
+    }
+
+    /**
+     * Put the GIF on the clipboard as an image, not as a URL.
+     *
+     * [ClipData.newUri] reads the type back from the provider, so the clip's own description says
+     * `image/gif` and an app that can paste a picture pastes a picture. The system attaches the read
+     * grant to the primary clip, so the receiver can open it without anything else being arranged.
+     *
+     * This does not pollute the keyboard's own clipboard history: that only records text clips.
+     */
+    private fun copyToClipboard(ctx: Context, uri: Uri, label: String): Boolean = runCatching {
+        val cm = ctx.getSystemService(ClipboardManager::class.java) ?: return false
+        cm.setPrimaryClip(ClipData.newUri(ctx.contentResolver, label.ifBlank { "GIF" }, uri))
+        true
+    }.getOrElse {
+        Log.w(TAG, "could not put the GIF on the clipboard", it)
+        false
     }
 
     /**
@@ -100,9 +142,6 @@ object GifInsert {
         val types = editor?.let { EditorInfoCompat.getContentMimeTypes(it) } ?: return false
         return types.any { ClipDescription.compareMimeTypes(MIME, it) }
     }
-
-    private fun commitLink(ic: InputConnection, url: String): Boolean =
-        runCatching { ic.commitText(url, 1) }.getOrDefault(false)
 
     private fun download(ctx: Context, url: String): File? = runCatching {
         val dir = File(ctx.cacheDir, DIR).apply { mkdirs() }

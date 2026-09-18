@@ -49,6 +49,7 @@
     <string name="gif_failed">Couldn\'t reach the GIF service.</string>
     <string name="gif_no_key">GIF search needs a key. Add one in Settings.</string>
     <string name="gif_insert_failed">That didn\'t go through. Try again, or pick another.</string>
+    <string name="gif_copied">This field takes no images \u2014 GIF copied, paste it anywhere</string>
     <string name="setup_gifs">GIFs</string>
     <string name="gifs_title">GIFs</string>
     <string name="gifs_blurb">The GIF button on the tools page searches KLIPY. It is the one thing in this keyboard that uses the network \u2014 everything else, the dictionary and the swipe model included, runs on the phone.</string>
