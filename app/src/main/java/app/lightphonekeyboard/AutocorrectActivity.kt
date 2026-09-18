@@ -74,6 +74,21 @@ class AutocorrectActivity : AppCompatActivity() {
             deleteChecks.add(action to check)
         }
 
+        root.addView(label(getString(R.string.touch_heading), 18f, R.color.gray))
+        val touchDetail = label(getString(R.string.touch_detail), 15f, R.color.gray)
+        root.addView(
+            label(getString(R.string.touch_reset), 22f, R.color.white).apply {
+                isClickable = true
+                setOnClickListener {
+                    Prefs.clearTouchModel(this@AutocorrectActivity)
+                    text = getString(R.string.touch_reset_done)
+                    isClickable = false
+                    touchDetail.text = getString(R.string.touch_reset_done_detail)
+                }
+            },
+        )
+        root.addView(touchDetail)
+
         refreshChecks()
 
         setContentView(LightScrollView(this).apply {

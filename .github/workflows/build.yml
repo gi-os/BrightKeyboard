@@ -63,8 +63,9 @@ jobs:
           # with like — a mismatch there shows as a permanent phantom "update available".
           # 3.0: the keyboard the Bright* set ships now — a neural swipe decoder, a tools page,
           # a clipboard, one-handed mode and a GIF picker, none of which the 1.x line had.
+          # 3.1: per-key touch targets, learned from the typist and invisible.
           # CI reads only major.minor from here, so this line is where a feature release is declared.
-          echo "name=3.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "name=3.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       # The typing logic (dictionary, autocorrect, swipe decoding) is pure Kotlin with no Android

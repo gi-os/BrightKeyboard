@@ -3009,6 +3009,11 @@ class LightKeyboardView @JvmOverloads constructor(
         pressedSuggestion = -1
         suggestionForgotten = false
         removeCallbacks(suggestionHold)
+        // Settings can clear the stored model while this view is alive. Notice before saving, or the
+        // copy in memory is written straight back over the reset the typist just asked for.
+        if (touchModelLoaded && Prefs.touchModel(context) == null) {
+            touch.reset(); savedTouchModel = null; touchModelLoaded = false
+        }
         saveTouchModel()   // persist what we learned in the field we're leaving
         applyPrefs()
         // Number / phone / date fields open straight on the symbols layer (its top row is 1-0).

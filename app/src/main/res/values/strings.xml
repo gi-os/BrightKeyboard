@@ -137,4 +137,9 @@
     <string name="setup_voice">Voice dictation</string>
     <string name="setup_voice_dl">(40MB download)</string>
     <string name="setup_voice_clear">Delete model</string>
+    <string name="touch_heading">Touch</string>
+    <string name="touch_reset">Reset touch model</string>
+    <string name="touch_detail">The keyboard learns where your taps for each key actually land, and reads an unclear tap against that. Reset it if typing starts to feel off. It will learn again as you type.</string>
+    <string name="touch_reset_done">Touch model reset</string>
+    <string name="touch_reset_done_detail">Takes effect the next time the keyboard opens.</string>
 </resources>

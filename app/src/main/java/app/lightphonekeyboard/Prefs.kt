@@ -286,6 +286,11 @@ object Prefs {
         prefs(c).edit().putString(KEY_TOUCH_MODEL, value).commit()
     }
 
+    /** Throw the learned touch model away. The keyboard reloads it the next time it lays out, finds
+     *  nothing, and starts again from the population prior. */
+    fun clearTouchModel(c: Context) =
+        prefs(c).edit().remove(KEY_TOUCH_MODEL).remove(KEY_TOUCH_OFFSETS).apply()
+
     /** Letter arrangement: [LAYOUT_QWERTY], [LAYOUT_AZERTY], [LAYOUT_QWERTZ] or [LAYOUT_T9]. */
     fun keyLayout(c: Context): String =
         prefs(c).getString(KEY_LAYOUT, LAYOUT_QWERTY) ?: LAYOUT_QWERTY

@@ -162,6 +162,45 @@ Optional settings, all in the app itself:
 
 Layout and appearance changes take effect the next time the keyboard opens.
 
+## Where your keys are
+
+The keyboard draws the keys on a fixed grid and never moves them. What moves is the target behind
+each one.
+
+Nobody hits the middle of a key. A finger lands below where it aimed, because you aim with the tip
+and the screen senses the pad. Holz and Baudisch named the gap between the two the perceived input
+point. How far below is personal, differs from key to key, and holds steady for one person.
+
+The keyboard measures yours. For each of the 26 letters it keeps two numbers: where your taps for
+that key center, and how far they scatter. An unclear tap is read against those, not against the
+drawn rectangle. Nothing on screen changes.
+
+Three rules keep it from becoming a keyboard that argues with you.
+
+**A tap in the core of a key types that key.** The middle 72% of every key's area is anchored.
+Nothing overrules it, not the spelling model and not anything learned here. Gunawardana, Paek and
+Meek showed in 2010 what happens without such a floor: the model overrules a deliberate, well-aimed
+tap. People mind that one error far more than they thank you for the ones it prevents. The drawn key
+is a promise.
+
+**It learns only from taps you let stand.** A letter you delete straight away teaches it nothing.
+That is the one honest signal a keyboard has about what you meant. It is also what stops the thing
+feeding on itself. The correction that would send it off course is the same event that drops the tap
+from the sample.
+
+**It moves slowly and not far.** About thirty taps to follow a change. A key's center may travel a
+third of a key and no further. Past that the keyboard would be guessing at your intent rather than
+correcting for how a fingertip is sensed, which is the only job it has.
+
+The model is 26 numbers a side. It lives in this app's own settings, goes nowhere else, and is sent
+nowhere at all. Key units rather than pixels, so changing the keyboard height keeps it. **Reset touch
+model**, under Autocorrect settings, puts it back to the starting point.
+
+Whether it helps you is not something a benchmark can promise. A simulated typist who lands two
+thirds of a row low reads at 88.6% with it and 69.4% without, and an accurate typist is left alone.
+But simulated typists are not people. Unlike the swipe work there is no corpus of real taps to check
+this against. If it ever feels wrong, reset it.
+
 ## Swipe typing
 
 Two decoders ship, and the setting that picks between them is under **Swipe settings**.
@@ -292,6 +331,29 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v3.1.x** (2026-09-18) — **The keys learn where your fingers go.**
+
+  Every letter now has its own target: where your taps for that key land, and how widely they
+  scatter. The keyboard learns both from your typing. Neither is visible. The keys sit where they
+  always did and never move or resize. See [Where your keys are](#where-your-keys-are).
+
+  What it replaces was one vertical offset per row. Three numbers for the whole keyboard, which
+  could not say that a thumb undershoots `q` and overshoots `p`. It could not say that you hit some
+  keys more precisely than others either, so every key claimed the same ground regardless.
+
+  The part worth knowing is what counts as evidence. The obvious rule is to learn from the taps the
+  keyboard resolved without help. That rule is wrong twice over. It feeds on itself, because a tap
+  moved to a neighbor is then credited to the neighbor. And it only ever sees taps that landed
+  nearer this key than any other, so every key measures the same width by construction. The rule
+  now is simpler: a tap teaches the model unless you delete it.
+
+  Two guarantees came with it. The middle 72% of every drawn key is anchored, so nothing overrules a
+  deliberate tap. And the model is stored in key units, so changing the keyboard height no longer
+  throws away what it learned. **Reset touch model**, under Autocorrect settings, clears it.
+
+  Also fixed: every cold start saved the model before reading it, so nothing survived one process
+  lifetime. That bug was in the old per-row version too.
 
 - **v3.0.x** (2026-09-18) — **Three-point-oh.**
 
