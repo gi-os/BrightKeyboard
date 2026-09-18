@@ -69,6 +69,21 @@ jobs:
       # The typing logic (dictionary, autocorrect, swipe decoding) is pure Kotlin with no Android
       # types precisely so it can be tested here, on the real 63k-word dictionary, rather than only
       # on a phone. A failure here stops the release.
+      # Says out loud whether the GIF key will be in this build. It cannot fail the build — a fork
+      # has no secrets and must still be buildable, and the picker degrades to "add a key in
+      # Settings" — but a release that silently shipped without one is the kind of thing nobody
+      # notices until a user says GIFs do not work.
+      - name: Is the GIF key in this build?
+        env:
+          KLIPY_KEY: ${{ secrets.KLIPY_KEY }}
+        run: |
+          if [ -n "${KLIPY_KEY:-}" ]; then
+            echo "KLIPY_KEY is set (${#KLIPY_KEY} characters); GIF search will work out of the box."
+          else
+            echo "::warning::KLIPY_KEY is not set. This APK ships without a GIF key, and the"
+            echo "::warning::picker will ask each user to add their own in Settings."
+          fi
+
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest
 
@@ -78,6 +93,10 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          # Read by app/build.gradle and scrambled into BuildConfig. A secret that exists in the
+          # repository but is not named here does not reach Gradle at all: getenv returns null, the
+          # build stays green, and the shipped APK asks every user for a key. See the check below.
+          KLIPY_KEY: ${{ secrets.KLIPY_KEY }}
         run: >-
           ./gradlew :app:assembleRelease
           -PappVersionName=${{ steps.version.outputs.name }}
@@ -117,6 +136,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KLIPY_KEY: ${{ secrets.KLIPY_KEY }}
         run: ./gradlew :app:assembleDebug
 
       - name: Upload debug APK
