@@ -192,10 +192,10 @@ from the sample.
 third of a key and no further. Past that the keyboard would be guessing at your intent rather than
 correcting for how a fingertip is sensed, which is the only job it has.
 
-Space, return and delete are in it too, on the same terms. Their sideways offset is measured against
+Space, return, delete, shift and 123 are in it too, on the same terms. Their sideways offset is measured against
 their own width rather than a letter's, since a space bar is five cells wide.
 
-The model is 29 numbers a side. It lives in this app's own settings, goes nowhere else, and is sent
+The model is 31 numbers a side. It lives in this app's own settings, goes nowhere else, and is sent
 nowhere at all. Key units rather than pixels, so changing the keyboard height keeps it.
 
 **Touch**, in settings, turns on an overlay that draws all of it **on the keys themselves**. Each key
@@ -343,6 +343,24 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v3.5.x** (2026-09-18) — **Shift and 123 learn, and the delete signal works again.**
+
+  Shift and 123 join space, return and delete in the touch model. Shift is letter-sized and sits
+  right beside Z. That boundary is worth getting right.
+
+  They needed a rule of their own. The model learns from any tap you do not delete, and these two put
+  nothing on screen to delete. An accidental shift would have counted as a good tap and pulled the key
+  further into its neighbor. Pressing shift straight back off, or going 123 then ABC, now counts as
+  taking it back.
+
+  **Fixes the delete signal, which v3.4 broke.** Parking a tap folds in the one before it. v3.4
+  parked the backspace before settling the verdict, so the letter being deleted was fed to the model
+  as a good tap, and the veto then threw away the backspace instead. Every tap was learned whatever
+  you did about it. That is the one thing this design exists to avoid. A test now walks the sequence.
+
+  Also: the autocorrect settings rows share the space at the bottom of the screen rather than leaving
+  it black. Each one is a larger target for it.
 
 - **v3.4.x** (2026-09-18) — **Space learns too, and the letters can come off.**
 
