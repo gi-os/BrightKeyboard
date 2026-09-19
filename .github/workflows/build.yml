@@ -70,8 +70,9 @@ jobs:
           # 3.5: shift and 123 learn as well, and the delete signal works again.
           # 3.6: delete after a swipe can take the whole traced word out.
           # 3.7: import a word list, and fold accents so accented words work at all.
+          # 3.8: six downloadable language packs, plus AOSP .combined as a pack source.
           # CI reads only major.minor from here, so this line is where a feature release is declared.
-          echo "name=3.7.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "name=3.8.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       # The typing logic (dictionary, autocorrect, swipe decoding) is pure Kotlin with no Android

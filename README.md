@@ -344,6 +344,35 @@ Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
 
+- **v3.8.x** (2026-09-19) — **Six more languages, fetched when you ask for one.**
+
+  **Settings → Language** offers Spanish, French, German, Portuguese, Italian and Norwegian beside
+  English. Tap one and the keyboard downloads its dictionary, about half a megabyte. Long press an
+  installed one to get the space back. English is built in and cannot be removed.
+
+  One language at a time, deliberately. Two in a single ranking means a word that is common in the
+  other one outranking the word you meant in this one.
+
+  **The keys do not change.** A pack carries a word list and a character model, not a layout, because
+  a missing accent key costs nothing: type `cafe` and get `café`, type `ol` and get `øl`. Everything
+  under a tap is a to z, so each pack stores its words folded and keeps the written spelling beside
+  them. Pick the key arrangement itself under Keyboard layout, as before.
+
+  A pack brings its own character model too. The letter that follows `th` in English is not the one
+  that follows it in Norwegian, and that table breaks a tie between two keys under one thumb.
+
+  `tools/gen_pack.py` builds them from two sources, the same split the English list uses. wordfreq
+  says how common a word is. The language's hunspell dictionary says whether it is a word at all. A
+  corpus on its own carries its own misspellings, and a typo in the dictionary can never be fixed.
+
+  It also reads AOSP `.combined` word lists, the format
+  [aosp-dictionaries](https://codeberg.org/Helium314/aosp-dictionaries) publishes for a hundred-odd
+  languages. Check the license before shipping a pack built from one. That repository names a
+  different source per language and they are not all alike.
+
+  The download is the second thing in this keyboard that touches the network, after the GIF button.
+  Typing still never does.
+
 - **v3.7.x** (2026-09-19) — **Import a word list, and accented words work at all.**
 
   **Words → Import a word list** takes a plain text file, one word to a line. It ignores anything

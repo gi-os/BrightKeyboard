@@ -67,6 +67,83 @@ def fold(word):
     return "".join(c for c in s if (("a" <= c <= "z") or c == "'") and not unicodedata.combining(c))
 
 
+# The English dictionary's log-frequency range, in milli-nats. A pack built from a source with no real
+# probabilities is mapped onto this, so the decoder's fitted constants keep meaning what they meant.
+LOGF_MIN, LOGF_MAX = -17621, -3206
+
+
+def read_combined(path):
+    """
+    An AOSP `.combined` word list: a header line, then ` word=<w>, f=<0-255>` lines.
+
+    This is the format of the word lists at codeberg.org/Helium314/aosp-dictionaries, which covers a
+    hundred-odd languages and is where every keyboard in this family gets its dictionaries. `f` is
+    AOSP's 0-255 frequency scale, not a probability, so it is mapped linearly onto the log-frequency
+    range the bundled English list occupies rather than pretending to be one.
+
+    **Check the licence before shipping a pack built this way.** The lists come from many sources and
+    the repository names one per language: some are CC BY 4.0 (attribute), some GPLv2 or LGPL-3.0
+    (incompatible with shipping inside an MIT release without care). The builder cannot know which,
+    so it will not guess.
+    """
+    out = {}
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            m = re.match(r"\s*word=([^,]+),\s*f=(-?\d+)", line)
+            if not m:
+                continue
+            word, freq = m.group(1), int(m.group(2))
+            if freq <= 0 or any(ch.isdigit() for ch in word):
+                continue
+            key = fold(word)
+            if not key or len(key) > 24:
+                continue
+            prev = out.get(key)
+            if prev is None or freq > prev[0]:
+                out[key] = (freq, word)
+    return out
+
+
+def write_pack(code, name, layout, ranked, out_path):
+    """[ranked] is folded -> (weight, as-written), any positive weight scale."""
+    top = sorted(ranked.items(), key=lambda kv: -kv[1][0])[:MAX_WORDS]
+    total = sum(w for _, (w, _) in top)
+    entries = {k: max(-32768, min(32767, round(math.log(w / total) * 1000))) for k, (w, _) in top}
+    ordered = sorted(entries.items(), key=lambda kv: (len(kv[0]), kv[0]))
+    words_bin = bytearray(struct.pack("<II", MAGIC, len(ordered)))
+    for word, logf in ordered:
+        words_bin += struct.pack("<Bh", len(word), logf) + word.encode("ascii")
+    display_lines = [f"{k}\t{d}" for k, (_, d) in top if d.lower() != k]
+
+    counts = "\n".join(f"{k} {max(1, int(w * 1e9))}" for k, (w, _) in top)
+    tmp_counts, tmp_model = f"/tmp/pack_{code}_counts.txt", f"/tmp/pack_{code}_charmodel.bin"
+    with open(tmp_counts, "w", encoding="utf-8") as f:
+        f.write(counts)
+    here = os.path.dirname(os.path.abspath(__file__))
+    subprocess.run([sys.executable, os.path.join(here, "gen_charmodel.py"), tmp_counts, tmp_model],
+                   check=True, stdout=subprocess.DEVNULL)
+
+    meta = "\n".join([f"code={code}", f"name={name}", f"layout={layout}",
+                      f"words={len(ordered)}", f"built={time.strftime('%Y-%m-%d')}"])
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        z.writestr("meta.txt", meta)
+        z.writestr("words.bin", bytes(words_bin))
+        z.write(tmp_model, "charmodel.bin")
+        z.writestr("display.txt", "\n".join(display_lines))
+    print(f"{code}: {len(ordered):,} words, {len(display_lines):,} with accents, "
+          f"{os.path.getsize(out_path)/1e6:.2f} MB -> {out_path}")
+
+
+def build_from_combined(code, name, layout, combined, out_path):
+    raw = read_combined(combined)
+    if not raw:
+        sys.exit(f"{code}: no usable words in {combined} — is it a Latin-script language?")
+    # f 0-255 onto the English log range, then back to a weight the shared writer can normalise.
+    ranked = {k: (math.exp(LOGF_MIN / 1000 + (f / 255.0) * (LOGF_MAX - LOGF_MIN) / 1000), d)
+              for k, (f, d) in raw.items()}
+    write_pack(code, name, layout, ranked, out_path)
+
+
 def build(code, out_path):
     import wordfreq
     from spylls.hunspell import Dictionary
@@ -142,7 +219,20 @@ def build(code, out_path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2 or sys.argv[1] not in LANGS:
-        sys.exit(f"usage: gen_pack.py <{'|'.join(LANGS)}> [out.pack]")
-    c = sys.argv[1]
-    build(c, sys.argv[2] if len(sys.argv) > 2 else f"{c}.pack")
+    # Two sources. wordfreq + hunspell for the six built here; an AOSP .combined word list for
+    # anything else, which is how the hundred-odd languages at aosp-dictionaries become available.
+    #
+    #   gen_pack.py es                                   es.pack
+    #   gen_pack.py --combined ca Català qwerty main_ca.combined ca.pack
+    if len(sys.argv) > 1 and sys.argv[1] == "--combined":
+        if len(sys.argv) < 6:
+            sys.exit("usage: gen_pack.py --combined <code> <name> <layout> <in.combined> [out.pack]")
+        _, _, code, name, layout, combined = sys.argv[:6]
+        out = sys.argv[6] if len(sys.argv) > 6 else f"{code}.pack"
+        build_from_combined(code, name, layout, combined, out)
+    elif len(sys.argv) > 1 and sys.argv[1] in LANGS:
+        c = sys.argv[1]
+        build(c, sys.argv[2] if len(sys.argv) > 2 else f"{c}.pack")
+    else:
+        sys.exit(f"usage: gen_pack.py <{'|'.join(LANGS)}> [out.pack]\n"
+                 f"       gen_pack.py --combined <code> <name> <layout> <in.combined> [out.pack]")
