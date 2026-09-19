@@ -344,6 +344,29 @@ Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
 
+- **v3.7.x** (2026-09-19) — **Import a word list, and accented words work at all.**
+
+  **Words → Import a word list** takes a plain text file, one word to a line. It ignores anything
+  after the word on a line, so a frequency list or a spreadsheet column works as it is. This is for
+  the case the hand-typed list is not for: a glossary, a field's jargon, a cast of characters, a
+  vocabulary. A second import replaces the first, because the second file is nearly always the same
+  file with a fix in it.
+
+  The imported words live in a file, not a setting. Settings stay in memory for the life of the
+  process, and a glossary runs to tens of thousands of words. The screen counts them rather than
+  listing them. Everything below that point treats them exactly like a name you added by hand.
+
+  **Fixes accented words in the personal list, which never worked.** The keyboard keyed a word by its
+  own spelling, and the searchable dictionary holds a to z. So it accepted "Zoë", listed it, and then
+  dropped it on the way into the dictionary. It sat there looking added and did nothing. Keys now use
+  a folded spelling: type `zoe`, get `Zoë`.
+
+  That folding is the groundwork for language packs. Everything under a tap is a to z. The trie
+  branches twenty-six ways, the character model is a 27 by 27 by 27 table, and the swipe model emits
+  twenty-seven classes. None of that widens cheaply, and none of it needs to. Across the six
+  languages being prepared, folding the accents away leaves 0.6% to 4.5% of words sharing a key,
+  which the alternatives list already sorts out by frequency.
+
 - **v3.6.x** (2026-09-18) — **Delete can take a whole swiped word out.**
 
   Under Swipe settings, **Delete after a swipe** is now a choice. Walk the readings, the default and
