@@ -286,9 +286,19 @@ class TouchModel(private val prior: Prior) {
         const val SLOT_SPACE = 26
         const val SLOT_ENTER = 27
         const val SLOT_BACKSPACE = 28
+        const val SLOT_SHIFT = 29
+        const val SLOT_SYMBOLS = 30
 
-        const val N = 29
-        const val VERSION = "v3"
+        const val N = 31
+        const val VERSION = "v4"
+
+        /**
+         * Formats that can still be read. Slots have only ever been appended, and a group has always
+         * been five numbers, so an older model is a prefix of a newer one: read what is there and
+         * leave the rest on the prior. Refusing it would throw away a fortnight of learning over a
+         * few keys the model did not know about at the time.
+         */
+        private val READABLE = setOf("v2", "v3", "v4")
 
         /**
          * A tap inside this fraction of a drawn key's box, per axis, always types that key. 0.85 per
@@ -343,18 +353,15 @@ class TouchModel(private val prior: Prior) {
         /**
          * Restore a serialized model; anything unreadable falls back to the prior, never to zeroes.
          *
-         * A `v2` model is 26 slots, from before the big keys were tracked. It is read as far as it
-         * goes and the three new slots keep the prior, because throwing away a model somebody spent a
-         * fortnight teaching over three keys it never knew about would be the wrong trade.
+         * An older model is shorter. It is read as far as it goes and the newer slots keep the prior;
+         * see [READABLE].
          */
         fun parse(s: String?, prior: Prior): TouchModel {
             val m = TouchModel(prior)
             val parts = s?.split(';') ?: return m
-            val slots = when {
-                parts.size == N + 1 && parts[0] == VERSION -> N
-                parts.size == LETTERS + 1 && parts[0] == "v2" -> LETTERS
-                else -> return m
-            }
+            if (parts[0] !in READABLE) return m
+            val slots = parts.size - 1
+            if (slots !in 1..N) return m
             for (i in 0 until slots) {
                 val f = parts[i + 1].split(',')
                 if (f.size != 5) return m

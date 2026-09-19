@@ -78,6 +78,9 @@ class AutocorrectActivity : AppCompatActivity() {
 
         setContentView(LightScrollView(this).apply {
             setBackgroundColor(getColor(R.color.black))
+            // Stretch the content to the viewport, so the rows above have something to share out.
+            // Without this the LinearLayout measures to its text and the weights have no effect.
+            isFillViewport = true
             addView(root)
         })
     }
@@ -146,6 +149,12 @@ class AutocorrectActivity : AppCompatActivity() {
                 addView(labels, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
                 addView(checkView)
             },
+            // Weight, with a wrap height: a row never gets shorter than its own text, and the space
+            // left over at the bottom of the screen is shared between the five of them instead of
+            // sitting there black. Each row is the touch target, so a taller row is a better one.
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 1f,
+            ),
         )
         return checkView
     }

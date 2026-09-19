@@ -318,6 +318,39 @@ class TouchModelTest {
     }
 
     @Test
+    fun `a deleted letter teaches nothing, and the order is what makes that true`() {
+        // The keyboard must settle the verdict on the parked tap BEFORE parking the new one. hold()
+        // folds in whatever is held, so parking the backspace first feeds the model the very letter
+        // the backspace is deleting, and the veto then throws away the backspace instead. v3.4
+        // shipped in exactly that order and learned from every tap regardless of what followed.
+        val m = TouchModel(prior(meanY = 0f))
+        m.hold(E, 0f, 0.4f)                              // typed e
+
+        m.veto()                                         // backspace: verdict first
+        m.hold(TouchModel.SLOT_BACKSPACE, 0f, 0.1f)      // then park the backspace tap
+
+        m.flush()
+        m.hold(R, 0f, 0.1f)                              // next letter
+        assertEquals("the deleted letter was learned anyway", 0f, m.count(E), 1e-6f)
+        assertEquals("and the backspace tap itself should have counted",
+            1f, m.count(TouchModel.SLOT_BACKSPACE), 1e-6f)
+    }
+
+    @Test
+    fun `an undone modifier is a veto too`() {
+        // Shift and 123 put nothing on screen, so there is no backspace to press. Pressing shift
+        // straight back off is the only way the typist can say it was a miss.
+        val m = TouchModel(prior(meanY = 0f))
+        m.hold(TouchModel.SLOT_SHIFT, 0.3f, 0.2f)
+        m.veto()
+        m.hold(TouchModel.SLOT_SHIFT, 0f, 0f)
+        m.flush()
+        assertEquals("only the deliberate one counts", 1f, m.count(TouchModel.SLOT_SHIFT), 1e-6f)
+        assertTrue("the miss should not have dragged the key",
+            abs(m.meanX(TouchModel.SLOT_SHIFT)) < 0.01f)
+    }
+
+    @Test
     fun `a tap the typist left standing is folded in by the next one`() {
         val m = TouchModel(prior(meanY = 0f))
         m.hold(E, 0f, 0.4f)

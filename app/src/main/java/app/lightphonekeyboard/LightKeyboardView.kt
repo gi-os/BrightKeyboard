@@ -2137,7 +2137,7 @@ class LightKeyboardView @JvmOverloads constructor(
                             // doesn't leave a stray letter behind. Same as a trace: wherever the thumb
                             // happened to start a swipe-to-hide was never aimed at a letter, so it is
                             // no evidence about one either.
-                            touch.veto()
+                            touch.veto(); parkedSlot = -1
                             if (firstKeyRetractable) listener?.onBackspace()
                             pressed.clear()
                             invalidate()
@@ -2291,7 +2291,7 @@ class LightKeyboardView @JvmOverloads constructor(
         if (start.hit.contains(x.coerceIn(0f, width - 1f), y.coerceIn(0f, height - 1f))) return
 
         tracing = true
-        touch.veto()   // the key this trace started on was never a tap, and is no evidence about one
+        touch.veto(); parkedSlot = -1   // a trace's first key was never a tap, and is no evidence about one
         stopBackspaceRepeat()
         if (firstKeyRetractable) listener?.onBackspace()
         firstKeyRetractable = false
@@ -2815,7 +2815,27 @@ class LightKeyboardView @JvmOverloads constructor(
         id == Key.SPACE -> TouchModel.SLOT_SPACE
         id == Key.ENTER -> TouchModel.SLOT_ENTER
         id == Key.BACKSPACE -> TouchModel.SLOT_BACKSPACE
+        id == Key.SHIFT -> TouchModel.SLOT_SHIFT
+        id == Key.SYMBOLS -> TouchModel.SLOT_SYMBOLS
         else -> -1
+    }
+
+    /** What is parked right now, so [isUndo] can tell an undone modifier from a deliberate one. */
+    private var parkedSlot = -1
+
+    /**
+     * Does this key say the tap before it was not what the typist meant?
+     *
+     * A delete does, which is the rule the whole model rests on. Shift and 123 need their own,
+     * because they put nothing on screen to delete: there is no backspace to press, so an accidental
+     * one would be counted as a good tap and pull the key further into its neighbour. Pressing shift
+     * straight back off, or going 123 then ABC, is the same statement by other means.
+     */
+    private fun isUndo(id: String): Boolean = when {
+        id == Key.BACKSPACE -> true
+        id == Key.SHIFT -> parkedSlot == TouchModel.SLOT_SHIFT
+        id == Key.LETTERS -> parkedSlot == TouchModel.SLOT_SYMBOLS
+        else -> false
     }
 
     /** The unit a slot's horizontal offset is stored in. See TouchModel's slot constants. */
@@ -2827,13 +2847,25 @@ class LightKeyboardView @JvmOverloads constructor(
      * cannot be counted twice or credited to a key that was not typed.
      */
     private fun resolveTap(x: Float, y: Float, raw: PlacedKey): PlacedKey {
-        if (layer != Layer.LETTERS || keypadMode || letterKeys.isEmpty()) return raw
-        val key = pickTarget(x, y, raw)
-        val slot = slotFor(key.id)
+        val tracking = layer == Layer.LETTERS && !keypadMode && letterKeys.isNotEmpty()
+        val key = if (tracking) pickTarget(x, y, raw) else raw
+
+        // The verdict on the tap BEFORE this one, settled before this one is parked.
+        //
+        // The order is the whole rule and it was wrong for a release. TouchModel.hold() folds in
+        // whatever is parked, so parking the backspace first fed the model the very letter the
+        // backspace was deleting, and the veto that followed then threw away the backspace tap
+        // instead. Every tap was learned whatever the typist did about it, which is the one thing
+        // this design exists to avoid.
+        if (isUndo(key.id)) touch.veto() else touch.flush()
+        parkedSlot = -1
+
+        val slot = if (tracking) slotFor(key.id) else -1
         if (slot >= 0) {
             touch.hold(slot, (x - key.cx) / unitXFor(key, slot), (y - key.cy) / rowPitch)
-            TouchInsight.changed()   // no-op unless the touch page is on screen
+            parkedSlot = slot
         }
+        TouchInsight.changed()   // no-op unless the touch page is on screen
         return key
     }
 
@@ -3031,10 +3063,6 @@ class LightKeyboardView @JvmOverloads constructor(
     /** Applies a key. Returns true if it committed a single retractable character (text or space). */
     private fun onKey(id: String): Boolean {
         tap()
-        // The parked tap's verdict. A delete says the last letter was not the one meant, so it must
-        // not teach the model anything; any other key means the typist moved on and left it alone.
-        // Letters are already parked by resolveLetter, whose hold() folds in whatever came before.
-        if (id == Key.BACKSPACE) touch.veto() else if (!isLetter(id)) touch.flush()
         if (id != Key.SPACE) lastSpaceTapMs = 0L   // any other key breaks a pending double-space
         when (id) {
             Key.SHIFT -> { onShift(); rebuild() }
