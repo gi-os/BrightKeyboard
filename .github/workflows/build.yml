@@ -68,8 +68,9 @@ jobs:
           # 3.3: that overlay moved onto the real keys, where the geometry already is.
           # 3.4: space/return/delete learn too, and the letters can be taken off the keys.
           # 3.5: shift and 123 learn as well, and the delete signal works again.
+          # 3.6: delete after a swipe can take the whole traced word out.
           # CI reads only major.minor from here, so this line is where a feature release is declared.
-          echo "name=3.5.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "name=3.6.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       # The typing logic (dictionary, autocorrect, swipe decoding) is pure Kotlin with no Android

@@ -344,6 +344,22 @@ Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
 
+- **v3.6.x** (2026-09-18) — **Delete can take a whole swiped word out.**
+
+  Under Swipe settings, **Delete after a swipe** is now a choice. Walk the readings, the default and
+  what it has always done, or take the whole traced word back out in one press.
+
+  One gesture puts a word in, so one press taking it out is the symmetric undo. When a trace reads
+  nothing like the word you drew, stepping through three more wrong ones to reach a delete is the
+  long way round. The leading space goes too, since the next swipe puts its own back.
+
+  Nothing is lost by choosing it. The other readings are in the suggestion strip, where a tap picks
+  one directly.
+
+  It does not change what delete does after autocorrect fixes a typed word. That is still Cycle or
+  Revert on the autocorrect page. The choice there is between offering the readings and putting your
+  own spelling back, and a traced word has no spelling of yours to put back.
+
 - **v3.5.x** (2026-09-18) — **Shift and 123 learn, and the delete signal works again.**
 
   Shift and 123 join space, return and delete in the touch model. Shift is letter-sized and sits
