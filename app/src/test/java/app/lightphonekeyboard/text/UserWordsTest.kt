@@ -29,11 +29,16 @@ class UserWordsTest {
     @Test
     fun `rejects what the keyboard could never type`() {
         val u = UserWords.of(listOf("Basil", "a", "", "  ", "hi there", "x9", "Zoë", "'"))
-        // Single letters and blanks are noise; a space is two words; a digit can't be part of a word.
-        // An accented letter is allowed in — it is a letter — but is dropped from the searchable
-        // dictionary, which only holds a-z.
+        // Single letters and blanks are noise, a space is two words, a digit cannot be part of a word.
+        //
+        // An accented word is both listed AND searchable. It used to be only the first: the key was
+        // the word lowercased, the dictionary holds a-z, so "Zoë" went in the list and then fell out
+        // of the dictionary on the way past. It sat in the settings screen looking added and did
+        // nothing, which is the worst of the three possible behaviours. Keys are folded now.
         assertEquals(listOf("Basil", "Zoë"), u.entries)
-        assertEquals(1, u.dictionary?.size)
+        assertEquals(2, u.dictionary?.size)
+        assertTrue("an accented word must be findable by its plain spelling", u.contains("zoe"))
+        assertEquals("and insert with its accent", "Zoë", u.displayOf("zoe"))
     }
 
     @Test
