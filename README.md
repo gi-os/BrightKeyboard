@@ -344,6 +344,31 @@ Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
 
+- **v3.9.x** (2026-09-19) — **Search for a language, and run several at once.**
+
+  **Settings → Language** now searches the dictionaries published at
+  [aosp-dictionaries](https://codeberg.org/Helium314/aosp-dictionaries), where keyboards in this
+  family get theirs. Eighty-odd languages. Type a name and tap it. The phone fetches that word list
+  from that project and builds a dictionary out of it.
+
+  Nothing ships installed but English, and nothing is rehosted here. Those lists come from many
+  sources under several licenses, and passing them on inside somebody else's release is not this
+  project's call to make.
+
+  **More than one can be on at once**, each a tick you turn on and off. This is an honest trade, not
+  a free win. A word list says how common a word is *within its own language*, so two at once says
+  either could be the one you are typing. Anyone switching on a second language is making that claim
+  about themselves, which is why it is a tick and not a single choice. Switch them all off and
+  English comes back, because something has to be there.
+
+  The phone builds the character model too, from whichever languages are on. There is no file to
+  download for "Spanish and Norwegian together", and that table breaks a tie between two keys under
+  one thumb. It ports the generator that made the English one, and every one of its 19,683 cells
+  matches that generator exactly.
+
+  A language whose letters are not a to z says so when you try it, rather than installing and then
+  turning out to hold nothing.
+
 - **v3.8.x** (2026-09-19) — **Six more languages, fetched when you ask for one.**
 
   **Settings → Language** offers Spanish, French, German, Portuguese, Italian and Norwegian beside
