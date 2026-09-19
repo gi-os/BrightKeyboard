@@ -1,5 +1,7 @@
 package app.lightphonekeyboard
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
@@ -7,6 +9,7 @@ import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import app.lightphonekeyboard.text.ForgottenWords
 import app.lightphonekeyboard.text.UserWords
@@ -38,10 +41,18 @@ class UserWordsActivity : AppCompatActivity() {
     private lateinit var forgottenSection: LinearLayout
     private lateinit var forgottenList: LinearLayout
     private var pad = 0
+    private lateinit var importSection: LinearLayout
+    private lateinit var importClear: TextView
+    private val importStatus: TextView by lazy { label("", 14f, R.color.gray) }
+
+    /** Registered at construction, as the launcher API requires — not inside a click handler. */
+    private val picker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        onPicked(r.data?.data)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        words = UserWords.deserialize(Prefs.userWords(this))
+        words = UserWords.deserialize(Prefs.userWords(this), CustomWords.load(this))
         forgotten = ForgottenWords.deserialize(Prefs.forgottenWords(this))
 
         pad = (24 * resources.displayMetrics.density).toInt()
@@ -104,12 +115,73 @@ class UserWordsActivity : AppCompatActivity() {
         }
         root.addView(forgottenSection)
 
+        // A list you already have, rather than a list you type in one word at a time. Under the
+        // hand-added section because that is the order of effort, not of importance.
+        importSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, pad, 0, 0)
+            addView(label(getString(R.string.import_title), 22f, R.color.white))
+            addView(label(getString(R.string.import_blurb), 14f, R.color.gray))
+            addView(
+                label(getString(R.string.import_pick), 20f, R.color.white).apply {
+                    isClickable = true
+                    setOnClickListener { pickFile() }
+                },
+            )
+            addView(importStatus)
+            addView(
+                label(getString(R.string.import_clear), 20f, R.color.white).apply {
+                    isClickable = true
+                    setOnClickListener { clearImported() }
+                }.also { importClear = it },
+            )
+        }
+        root.addView(importSection)
+
         setContentView(
             LightScrollView(this).apply {
                 setBackgroundColor(getColor(R.color.black))
                 addView(root)
             },
         )
+        refresh()
+    }
+
+    /**
+     * Ask for a text file. `OPEN_DOCUMENT` rather than a permission and a file browser of our own:
+     * the picker hands back a readable URI for the one file chosen and nothing else, so this screen
+     * never holds access to storage it has no business in.
+     */
+    private fun pickFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/plain", "text/csv", "*/*"))
+        }
+        runCatching { picker.launch(intent) }
+            .onFailure { importStatus.text = getString(R.string.import_no_picker) }
+    }
+
+    private fun onPicked(uri: Uri?) {
+        if (uri == null) return
+        val result = runCatching { CustomWords.import(this, uri) }.getOrNull()
+        if (result == null) {
+            importStatus.text = getString(R.string.import_failed)
+            return
+        }
+        words = UserWords.deserialize(Prefs.userWords(this), CustomWords.load(this))
+        importStatus.text = when {
+            result.words.isEmpty() -> getString(R.string.import_none)
+            result.rejected == 0 -> getString(R.string.import_done, result.words.size)
+            else -> getString(R.string.import_done_some, result.words.size, result.rejected)
+        }
+        refresh()
+    }
+
+    private fun clearImported() {
+        CustomWords.clear(this)
+        words = UserWords.deserialize(Prefs.userWords(this), emptyList())
+        importStatus.text = getString(R.string.import_cleared)
         refresh()
     }
 
@@ -150,6 +222,11 @@ class UserWordsActivity : AppCompatActivity() {
 
     /** Rebuild both lists. They are a handful of rows, so replacing them all is simpler than diffing. */
     private fun refresh() {
+        val imported = words.importedSize
+        importClear.visibility = if (imported > 0) TextView.VISIBLE else TextView.GONE
+        if (imported > 0 && importStatus.text.isNullOrEmpty()) {
+            importStatus.text = getString(R.string.import_holding, imported)
+        }
         list.removeAllViews()
         empty.visibility = if (words.size == 0) TextView.VISIBLE else TextView.GONE
         for (word in words.entries) {

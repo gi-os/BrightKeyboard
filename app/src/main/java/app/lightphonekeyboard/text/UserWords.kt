@@ -20,26 +20,36 @@ package app.lightphonekeyboard.text
 class UserWords private constructor(
     /** As entered, in entry order — what the settings screen lists. */
     val entries: List<String>,
+    /**
+     * Words from a file the user imported. Kept apart from [entries] for one reason: the settings
+     * screen lists entries a row at a time, and a glossary is tens of thousands of them. They are the
+     * same thing to every consumer below — one dictionary, one display map — and a different thing to
+     * the person, who curated one by hand and handed the other over in bulk.
+     */
+    val imported: List<String>,
     private val display: Map<String, String>,
     /** The same words, lowercased, in searchable form. Null when there are none. */
     val dictionary: Dictionary?,
 ) {
     val size: Int get() = entries.size
 
-    fun contains(word: String): Boolean = display.containsKey(word.lowercase())
+    /** How many words came from a file. Shown as a count, never as a list. */
+    val importedSize: Int get() = imported.size
 
-    /** The form the user typed for [word] (matched case-insensitively), or [word] unchanged. */
-    fun displayOf(word: String): String = display[word.lowercase()] ?: word
+    fun contains(word: String): Boolean = display.containsKey(Folding.fold(word))
+
+    /** The form the user typed for [word], found by its folded key, or [word] unchanged. */
+    fun displayOf(word: String): String = display[Folding.fold(word)] ?: word
 
     fun withWord(word: String): UserWords {
         val w = word.trim()
         if (!isAcceptable(w)) return this
         if (contains(w)) return this
-        return of(entries + w)
+        return of(entries + w, imported)
     }
 
     fun without(word: String): UserWords =
-        of(entries.filterNot { it.equals(word, ignoreCase = true) })
+        of(entries.filterNot { it.equals(word, ignoreCase = true) }, imported)
 
     /** Serialised for SharedPreferences. Newline-separated, which no acceptable word can contain. */
     fun serialize(): String = entries.joinToString("\n")
@@ -56,7 +66,7 @@ class UserWords private constructor(
         /** Longest word worth storing; also what the scorers' scratch buffers allow. */
         const val MAX_LENGTH = Dictionary.MAX_WORD
 
-        val EMPTY = UserWords(emptyList(), emptyMap(), null)
+        val EMPTY = UserWords(emptyList(), emptyList(), emptyMap(), null)
 
         /**
          * Only letters and an apostrophe, and long enough to be worth a slot. Rejecting the rest here
@@ -68,25 +78,30 @@ class UserWords private constructor(
             return w.length in 2..MAX_LENGTH && w.all { it.isLetter() || it == '\'' }
         }
 
-        fun of(words: List<String>): UserWords {
+        fun of(words: List<String>, importedWords: List<String> = emptyList()): UserWords {
             val kept = ArrayList<String>()
+            val keptImported = ArrayList<String>()
             val display = HashMap<String, String>()
-            for (raw in words) {
-                val w = raw.trim()
-                if (!isAcceptable(w)) continue
-                val key = w.lowercase()
-                if (display.containsKey(key)) continue
-                display[key] = w
-                kept.add(w)
+            // Hand-added first, so a word in both keeps the spelling its owner typed.
+            for ((list, out) in listOf(words to kept, importedWords to keptImported)) {
+                for (raw in list) {
+                    val w = raw.trim()
+                    if (!isAcceptable(w)) continue
+                    val key = Folding.fold(w)
+                    if (key.isEmpty() || display.containsKey(key)) continue
+                    display[key] = w
+                    out.add(w)
+                }
             }
-            if (kept.isEmpty()) return EMPTY
-            val dict = Dictionary.of(kept.map { it.lowercase() to LOG_FREQ })
-            return UserWords(kept, display, dict)
+            if (kept.isEmpty() && keptImported.isEmpty()) return EMPTY
+            val all = kept + keptImported
+            val dict = Dictionary.of(all.map { Folding.fold(it) to LOG_FREQ })
+            return UserWords(kept, keptImported, display, dict)
         }
 
-        fun deserialize(stored: String?): UserWords {
-            if (stored.isNullOrBlank()) return EMPTY
-            return of(stored.split("\n"))
+        fun deserialize(stored: String?, importedWords: List<String> = emptyList()): UserWords {
+            if (stored.isNullOrBlank() && importedWords.isEmpty()) return EMPTY
+            return of(stored?.split("\n").orEmpty(), importedWords)
         }
     }
 }

@@ -136,7 +136,7 @@ class TextEngine(private val context: Context) {
                 val s = Suggester(loaded, c)
                 val sp = WordSplitter(loaded)
                 pendingGrid?.let { c.grid = it; d.grid = it; sp.grid = it }
-                val words = UserWords.deserialize(Prefs.userWords(context))
+                val words = UserWords.deserialize(Prefs.userWords(context), CustomWords.load(context))
                 c.userWords = words
                 d.userWords = words
                 s.userWords = words

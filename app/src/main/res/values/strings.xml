@@ -168,4 +168,15 @@
     <string name="touch_keypad">The phone pad types digits, so there is no per-letter touch model to draw. Switch to a letter layout to see one.</string>
     <string name="touch_reset">Reset touch model</string>
     <string name="touch_reset_done">Touch model reset</string>
+    <string name="import_title">Import a word list</string>
+    <string name="import_blurb">A plain text file, one word to a line. Anything after the word on a line is ignored, so a frequency list or a spreadsheet column works as it is. Importing replaces whatever was imported before.</string>
+    <string name="import_pick">Choose a file</string>
+    <string name="import_clear">Remove imported words</string>
+    <string name="import_holding">Holding %1$d imported words.</string>
+    <string name="import_done">Imported %1$d words.</string>
+    <string name="import_done_some">Imported %1$d words. %2$d lines held nothing this keyboard can type.</string>
+    <string name="import_none">Nothing in that file could be used. It needs one word to a line.</string>
+    <string name="import_cleared">Imported words removed.</string>
+    <string name="import_failed">That file could not be read.</string>
+    <string name="import_no_picker">No file picker on this phone.</string>
 </resources>
