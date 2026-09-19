@@ -57,7 +57,12 @@ class TouchModelStressTest {
 
     private fun freshPrior() = TouchModel.Prior(
         FloatArray(TouchModel.N),
-        FloatArray(TouchModel.N) { i -> rowMeanPrior[keys.first { k -> k.ch == 'a' + i }.row] },
+        // Letters get their row's prior; the big keys are not on this simulated board, so they keep
+        // the bottom row's, which is what the real keyboard gives them too.
+        FloatArray(TouchModel.N) { i ->
+            val k = keys.firstOrNull { it.ch == 'a' + i }
+            rowMeanPrior[k?.row ?: rows.lastIndex]
+        },
         sigmaKeyUnits(letterKeyW), sigmaKeyUnits(rowPitch),
     )
 

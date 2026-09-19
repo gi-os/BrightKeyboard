@@ -142,6 +142,15 @@
     <string name="setup_touch_value">See it</string>
     <string name="touch_blurb">Where your taps for each key really land. The keyboard reads an unclear tap against this and never moves a key on screen.</string>
     <string name="touch_overlay">Draw it on the keys</string>
+    <string name="tools_key_heading">The key next to space</string>
+    <string name="tools_key_tools">Toolbox</string>
+    <string name="tools_key_tools_detail">Clipboard, emoji, GIFs, one hand, and hide the keyboard.</string>
+    <string name="tools_key_emoji">Emoji</string>
+    <string name="tools_key_emoji_detail">Straight to the emoji panel, skipping the toolbox.</string>
+    <string name="tools_key_off">Nothing</string>
+    <string name="tools_key_off_detail">Leave the key off. The row closes up around it.</string>
+    <string name="touch_blank">Hide the letters</string>
+    <string name="touch_blank_detail">Takes the labels off, leaving a bump under F and J the way a real keyboard does. Space, return, delete and the rest stay. Worth trying once the keys have learned your hand.</string>
     <string name="touch_try">Type here to watch it move</string>
     <string name="touch_layer_center">Target</string>
     <string name="touch_layer_core">Core</string>

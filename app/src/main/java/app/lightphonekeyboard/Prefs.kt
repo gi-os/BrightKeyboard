@@ -21,6 +21,8 @@ object Prefs {
     private const val KEY_TOUCH_MODEL = "touch_model"
     private const val KEY_TOUCH_MAP = "touch_map_"
     private const val KEY_TOUCH_OVERLAY = "touch_overlay"
+    private const val KEY_BLANK_LETTERS = "blank_letters"
+    private const val KEY_TOOLS_KEY = "tools_key"
     private const val KEY_LAYOUT = "key_layout"
     private const val KEY_HEIGHT = "key_height"
     private const val KEY_STRENGTH = "correction_strength"
@@ -287,6 +289,28 @@ object Prefs {
     fun setTouchModel(c: Context, value: String) {
         prefs(c).edit().putString(KEY_TOUCH_MODEL, value).commit()
     }
+
+    const val TOOLS_KEY_OFF = "off"
+    const val TOOLS_KEY_TOOLS = "tools"
+    const val TOOLS_KEY_EMOJI = "emoji"
+
+    /**
+     * What the slot on the bottom row does: nothing, open the toolbox, or open emoji directly.
+     *
+     * Migrated from the old boolean, which only said whether the key was there. Somebody who had it
+     * on keeps the toolbox, somebody who had it off keeps it off, and the third answer is new.
+     */
+    fun toolsKey(c: Context): String = prefs(c).getString(KEY_TOOLS_KEY, null)
+        ?: if (prefs(c).getBoolean(KEY_EMOJI_KEY, true)) TOOLS_KEY_TOOLS else TOOLS_KEY_OFF
+
+    fun setToolsKey(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_TOOLS_KEY, value).apply()
+
+    /** Take the letters off the keys and leave a bump under F and J. Off by default, obviously. */
+    fun blankLetters(c: Context): Boolean = prefs(c).getBoolean(KEY_BLANK_LETTERS, false)
+
+    fun setBlankLetters(c: Context, v: Boolean) =
+        prefs(c).edit().putBoolean(KEY_BLANK_LETTERS, v).apply()
 
     /** Draw the learned targets over the keys as you type. Off by default: it is there to be looked
      *  at deliberately, and a keyboard covered in diagnostics is not one you write messages on. */

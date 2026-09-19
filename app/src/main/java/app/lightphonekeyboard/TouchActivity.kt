@@ -73,6 +73,18 @@ class TouchActivity : AppCompatActivity() {
             },
         )
 
+        root.addView(
+            LightToggle(this).apply {
+                setText(getString(R.string.touch_blank))
+                isChecked = Prefs.blankLetters(this@TouchActivity)
+                setOnCheckedChangeListener { on ->
+                    Prefs.setBlankLetters(this@TouchActivity, on)
+                    TouchInsight.refresh()
+                }
+            },
+        )
+        root.addView(label(getString(R.string.touch_blank_detail), 13f, R.color.gray))
+
         // Four layers, four chips. On a page whose whole job is showing four things at once, four
         // full toggle rows would cost more height than the keyboard they control.
         root.addView(

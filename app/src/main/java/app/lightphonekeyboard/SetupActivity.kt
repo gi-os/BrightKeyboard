@@ -141,9 +141,6 @@ class SetupActivity : AppCompatActivity() {
         val returnToggle = toggle(R.string.setup_returnkey, Prefs.returnKey(this)) {
             Prefs.setReturnKey(this, it)
         }
-        val emojiToggle = toggle(R.string.setup_emojikey, Prefs.emojiKey(this)) {
-            Prefs.setEmojiKey(this, it)
-        }
         val hideToggle = toggle(R.string.setup_hidekey, Prefs.hideKey(this)) {
             Prefs.setHideKey(this, it)
         }
@@ -380,7 +377,7 @@ class SetupActivity : AppCompatActivity() {
             titleView, blurbView, s1.row, s2.row, scopeView,
             autocorrectToggle, swipeToggle, suggestionsToggle, autocapToggle, autoperiodToggle,
             hapticsToggle,
-            returnToggle, emojiToggle, hideToggle, clipboardToggle,
+            returnToggle, hideToggle, clipboardToggle,
             voiceRow, voiceStatus!!,
             layoutRow, heightRow, handRow, correctionRow, touchRow, swipeRow, emojiRow, gifRow,
             wordsRow, tryRow,

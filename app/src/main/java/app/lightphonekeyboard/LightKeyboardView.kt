@@ -211,6 +211,7 @@ class LightKeyboardView @JvmOverloads constructor(
         // here and are not any more: both open an Activity, which means leaving the field you are
         // typing in, and both already sit in the app's own settings where somebody looking for
         // them would look. A page of shortcuts to somewhere else is not a toolbox.
+        const val TOOL_BACK = "__TOOL_BACK__"
         const val TOOL_CLIPS = "__TOOL_CLIPS__"
         const val TOOL_EMOJI = "__TOOL_EMOJI__"
         const val TOOL_GIFS = "__TOOL_GIFS__"
@@ -340,11 +341,13 @@ class LightKeyboardView @JvmOverloads constructor(
          * a target you can hit without looking, and because the row below already has seven things
          * in it.
          */
+        // A page of tiles, and a way back. The bottom row used to be the keyboard's own — space,
+        // return, ABC and the rest — which made a modal page look like somewhere you could type.
         val tools = listOf(
             listOf(Key.TOOL_CLIPS, Key.TOOL_EMOJI),
             listOf(Key.TOOL_GIFS, Key.TOOL_HAND),
             listOf(Key.TOOL_HIDE),
-            listOf(Key.LETTERS, Key.GLOBE, Key.SPACE, Key.MIC, Key.HIDE, Key.ENTER),
+            listOf(Key.TOOL_BACK),
         )
     }
 
@@ -365,6 +368,8 @@ class LightKeyboardView @JvmOverloads constructor(
     // from the settings page on the next field rather than needing the keyboard restarted.
     private var touchOverlay = false
     private var touchLayers = TouchOverlay.Layers(true, true, true, true)
+    private var blankLetters = false
+    private var toolsKeyMode = Prefs.TOOLS_KEY_TOOLS
     private var haptics = true
     private var suggestionsOn = false
     private var oneHanded = Prefs.HAND_OFF
@@ -423,6 +428,9 @@ class LightKeyboardView @JvmOverloads constructor(
 
     private val placed = ArrayList<PlacedKey>()
     private val letterKeys = ArrayList<PlacedKey>()   // a-z keys only, for the accuracy model
+
+    /** Space, return and backspace: big, mis-hit in their own way, and learned like a letter. */
+    private val trackedKeys = ArrayList<PlacedKey>()
 
     // --- metrics (px), set by applyPrefs() for the active height preset ---
     // Medium matches the LightOS keyboard; Short tightens the gutters and shortens the keys, Tall does
@@ -495,6 +503,7 @@ class LightKeyboardView @JvmOverloads constructor(
         swipeTyping = Prefs.swipeTyping(context)
         touchOverlay = Prefs.touchOverlay(context)
         touchLayers = TouchOverlay.Layers.from(context)
+        blankLetters = Prefs.blankLetters(context)
         haptics = Prefs.haptics(context)
         hiddenKeys.clear()
         if (!Prefs.voiceEnabled(context)) hiddenKeys.add(Key.MIC)
@@ -502,7 +511,8 @@ class LightKeyboardView @JvmOverloads constructor(
         // stored as a setting, because the answer changes whenever the user installs, removes or
         // enables a keyboard in Android settings — and this runs on every reset(), so it is current.
         if (!hasOtherInputMethods()) hiddenKeys.add(Key.GLOBE)
-        if (!Prefs.emojiKey(context)) hiddenKeys.add(Key.TOOLS)
+        toolsKeyMode = Prefs.toolsKey(context)
+        if (toolsKeyMode == Prefs.TOOLS_KEY_OFF) hiddenKeys.add(Key.TOOLS)
         if (!Prefs.returnKey(context)) hiddenKeys.add(Key.ENTER)
         if (!Prefs.hideKey(context)) hiddenKeys.add(Key.HIDE)
         oneHanded = Prefs.oneHanded(context)
@@ -714,7 +724,11 @@ class LightKeyboardView @JvmOverloads constructor(
             // one, so hiding it would let somebody type a query they could never submit. The
             // setting is about writing, and this is not writing.
             val hidden = if (searchQuery != null) hiddenKeys - Key.ENTER else hiddenKeys
-            return if (hidden.isEmpty()) rows else rows.map { row -> row.filter { it !in hidden } }
+            val kept = if (hidden.isEmpty()) rows else rows.map { row -> row.filter { it !in hidden } }
+            // The bottom-row slot can be the toolbox or the emoji panel. Same key, same place, and
+            // for somebody who only ever went to the toolbox for emoji, one tap instead of two.
+            if (toolsKeyMode != Prefs.TOOLS_KEY_EMOJI) return kept
+            return kept.map { row -> row.map { if (it == Key.TOOLS) Key.EMOJI else it } }
         }
 
     // ------------------------------------------------------------------ layout
@@ -794,7 +808,11 @@ class LightKeyboardView @JvmOverloads constructor(
             val visBottom = visTop + rowKeyH
             layoutRow(rows[i], bandTop, bandBottom, visTop, visBottom)
         }
-        for (k in placed) if (isLetter(k.id)) letterKeys.add(k)
+        trackedKeys.clear()
+        for (k in placed) {
+            if (isLetter(k.id)) letterKeys.add(k)
+            else if (slotFor(k.id) >= 0) trackedKeys.add(k)
+        }
         publishKeyGrid()
     }
 
@@ -1465,6 +1483,26 @@ class LightKeyboardView @JvmOverloads constructor(
     }
 
     /**
+     * A letter with its label taken off, and a homing bump under F and J.
+     *
+     * The whole point of learning where your taps land is that after a while you are not reading the
+     * keyboard, you are reaching for it. This is the setting that says so out loud. Two marks is what
+     * a real keyboard gives you, and F and J are the two in every layout here — AZERTY and QWERTZ
+     * move the letters around them but not those.
+     *
+     * The keys are still there and still where they were. Nothing is hidden but the ink, and the
+     * press flash is left alone, because it is the only feedback left.
+     */
+    private fun drawBlankLetter(canvas: Canvas, pk: PlacedKey) {
+        if (pk.id != "f" && pk.id != "j") return
+        val y = pk.vis.centerY() + dpf(9)
+        canvas.drawRect(
+            pk.vis.centerX() - dpf(6), y - dpf(1),
+            pk.vis.centerX() + dpf(6), y + dpf(1), spacePaint,
+        )
+    }
+
+    /**
      * Paint the learned targets over the letters, when the typist has asked to see them.
      *
      * Over the keys rather than beside them: the keyboard is the only thing on the phone with the
@@ -1474,14 +1512,15 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun drawTouchOverlay(canvas: Canvas) {
         if (!touchOverlay || layer != Layer.LETTERS || keypadMode || letterKeys.isEmpty()) return
         if (!touchModelLoaded) return
-        val cells = letterKeys.map {
+        val cells = (letterKeys + trackedKeys).map {
+            val slot = slotFor(it.id)
             TouchOverlay.Cell(
-                it.id[0], it.cx, it.cy, it.vis.width() / 2f, it.vis.height() / 2f,
+                slot, it.cx, it.cy, it.vis.width() / 2f, it.vis.height() / 2f,
+                unitXFor(it, slot), rowPitch,
             )
         }
         TouchOverlay.draw(
-            canvas, cells, touch, touchLayers, letterKeyW, rowPitch,
-            resources.displayMetrics.density, Color.WHITE,
+            canvas, cells, touch, touchLayers, resources.displayMetrics.density, Color.WHITE,
         )
     }
 
@@ -1642,6 +1681,7 @@ class LightKeyboardView @JvmOverloads constructor(
 
     private fun drawKey(canvas: Canvas, pk: PlacedKey) {
         val id = pk.id
+        if (blankLetters && layer == Layer.LETTERS && isLetter(id)) { drawBlankLetter(canvas, pk); return }
         if (id == Key.SPACE) {
             val y = pk.vis.centerY()
             canvas.drawRect(pk.vis.left + dpf(28), y - dpf(1), pk.vis.right - dpf(28), y + dpf(1), spacePaint)
@@ -1928,7 +1968,7 @@ class LightKeyboardView @JvmOverloads constructor(
         Key.TOOLS -> R.drawable.ic_kb_tools
         Key.HIDE -> R.drawable.ic_kb_hide
         Key.HAND_RESET -> R.drawable.ic_kb_expand
-        Key.CLIP_BACK, Key.GIF_BACK -> R.drawable.ic_kb_chevron_down
+        Key.CLIP_BACK, Key.GIF_BACK, Key.TOOL_BACK -> R.drawable.ic_kb_chevron_down
         Key.GIF_SEARCH -> R.drawable.ic_kb_search
         Key.GIF_STARRED -> if (showingStarred) R.drawable.ic_kb_star_on else R.drawable.ic_kb_star_off
         Key.GIF_PREV -> R.drawable.ic_kb_chevron_left
@@ -1948,7 +1988,8 @@ class LightKeyboardView @JvmOverloads constructor(
     // Icon inset inside its key. Compact keys are shorter, so the insets shrink too or the glyphs vanish.
     private fun padFor(id: String): Float = when (id) {
         Key.SHIFT -> if (compact) dpf(6) else dpf(9)
-        Key.BACKSPACE, Key.EMOJI_BACK, Key.CLIP_BACK, Key.GIF_BACK -> if (compact) dpf(7) else dpf(10)
+        Key.BACKSPACE, Key.EMOJI_BACK, Key.CLIP_BACK, Key.GIF_BACK, Key.TOOL_BACK ->
+            if (compact) dpf(7) else dpf(10)
         // The strip button is as tall as the whole keyboard; without a large inset its glyph would
         // be scaled to that height and fill the strip.
         Key.HAND_RESET -> (minOf(rowKeyH, width * (1f - ONE_HANDED_FRACTION)) / 2f - dpf(11))
@@ -2178,7 +2219,7 @@ class LightKeyboardView @JvmOverloads constructor(
         if (dismissedThisGesture) return false
         val raw = findKey(x, y) ?: return false
         // Only letters get the accuracy treatment; control keys & other layers stay exact hit-testing.
-        val key = if (layer == Layer.LETTERS && isLetter(raw.id)) resolveLetter(x, y, raw) else raw
+        val key = resolveTap(x, y, raw)
         pressed[pointerId] = key
         invalidate()
         val retractable = onKey(key.id)
@@ -2768,14 +2809,62 @@ class LightKeyboardView @JvmOverloads constructor(
 
     private fun isLetter(id: String): Boolean = id.length == 1 && id[0] in 'a'..'z'
 
-    private fun resolveLetter(x: Float, y: Float, raw: PlacedKey): PlacedKey {
-        if (letterKeys.isEmpty()) return raw
-        val home = aimedAt(x, y, raw)
-        val result = if (inCore(x, y, home)) home else resolveLetterTo(x, y, home)
-        // Park it. Whether it becomes evidence depends on what the typist does next — see TouchModel.hold.
-        touch.hold(result.id[0] - 'a', (x - result.cx) / letterKeyW, (y - result.cy) / rowPitch)
-        TouchInsight.changed()   // no-op unless the touch map is on screen
-        return result
+    /** Which slot of the touch model a key id occupies, or -1 for one that is not tracked. */
+    private fun slotFor(id: String): Int = when {
+        isLetter(id) -> id[0] - 'a'
+        id == Key.SPACE -> TouchModel.SLOT_SPACE
+        id == Key.ENTER -> TouchModel.SLOT_ENTER
+        id == Key.BACKSPACE -> TouchModel.SLOT_BACKSPACE
+        else -> -1
+    }
+
+    /** The unit a slot's horizontal offset is stored in. See TouchModel's slot constants. */
+    private fun unitXFor(key: PlacedKey, slot: Int): Float =
+        if (slot < TouchModel.LETTERS) letterKeyW else key.vis.width().coerceAtLeast(1f)
+
+    /**
+     * Resolve the key under a tap and park it for the model. The one place a tap is folded in, so it
+     * cannot be counted twice or credited to a key that was not typed.
+     */
+    private fun resolveTap(x: Float, y: Float, raw: PlacedKey): PlacedKey {
+        if (layer != Layer.LETTERS || keypadMode || letterKeys.isEmpty()) return raw
+        val key = pickTarget(x, y, raw)
+        val slot = slotFor(key.id)
+        if (slot >= 0) {
+            touch.hold(slot, (x - key.cx) / unitXFor(key, slot), (y - key.cy) / rowPitch)
+            TouchInsight.changed()   // no-op unless the touch page is on screen
+        }
+        return key
+    }
+
+    private fun pickTarget(x: Float, y: Float, raw: PlacedKey): PlacedKey {
+        if (isLetter(raw.id)) {
+            val home = aimedAt(x, y, raw)
+            if (inCore(x, y, home)) return home       // a letter's core is taken by nothing
+            bigKeyUnder(x, y)?.let { return it }
+            return resolveLetterTo(x, y, home)
+        }
+        return bigKeyUnder(x, y) ?: raw
+    }
+
+    /**
+     * A big key whose *learned* target covers this point, which is not the same as its drawn one.
+     *
+     * Space, return and backspace are missed in ways a letter is not: they sit at the edges, they are
+     * reached rather than aimed at, and the miss is mostly one direction. Correcting the point and
+     * testing the drawn rectangle moves the boundary by exactly what has been learned and leaves the
+     * key painted where it is. Checked after a letter's core and never before it, so growing the
+     * space bar can never cost somebody the letter they hit squarely.
+     */
+    private fun bigKeyUnder(x: Float, y: Float): PlacedKey? {
+        for (k in trackedKeys) {
+            val slot = slotFor(k.id)
+            if (slot < 0) continue
+            val px = x - touch.meanX(slot) * unitXFor(k, slot)
+            val py = y - touch.meanY(slot) * rowPitch
+            if (k.hit.contains(px, py)) return k
+        }
+        return null
     }
 
     /**
@@ -2883,6 +2972,7 @@ class LightKeyboardView @JvmOverloads constructor(
         TouchInsight.onRefresh = {
             touchOverlay = Prefs.touchOverlay(context)
             touchLayers = TouchOverlay.Layers.from(context)
+            blankLetters = Prefs.blankLetters(context)
             invalidate()
         }
         val saved = Prefs.touchModel(context)
@@ -2960,7 +3050,7 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.TOOL_HIDE -> listener?.onDismiss()
             Key.TOOL_HAND -> setOneHanded(if (narrowed) Prefs.HAND_OFF else defaultHand())
             Key.HAND_RESET -> setOneHanded(Prefs.HAND_OFF)
-            Key.CLIP_BACK -> { layer = Layer.LETTERS; rebuild() }
+            Key.CLIP_BACK, Key.TOOL_BACK -> { layer = Layer.LETTERS; rebuild() }
             Key.CLIP_PREV -> { if (clipPage > 0) { clipPage--; rebuild() } }
             Key.CLIP_NEXT -> { if (clipPage < clipPages() - 1) { clipPage++; rebuild() } }
             Key.CLIP_CLEAR -> writeClips { Clips.clearUnpinned(it) }

@@ -273,8 +273,22 @@ class TouchModel(private val prior: Prior) {
     private fun r(v: Float): Float = (v * 10000f).roundToInt() / 10000f
 
     companion object {
-        const val N = 26
-        const val VERSION = "v2"
+        /** Slots 0..25 are a-z. */
+        const val LETTERS = 26
+
+        /**
+         * Three more slots for the big keys. They are learned and applied exactly like a letter, but
+         * their x offset is stored in units of **their own width** rather than a letter's: a space
+         * bar is five cells across, so a sideways miss measured in letter widths would be a number
+         * with no meaning. The vertical unit is the row pitch for every slot, and vertical is where
+         * the miss actually lives on these keys.
+         */
+        const val SLOT_SPACE = 26
+        const val SLOT_ENTER = 27
+        const val SLOT_BACKSPACE = 28
+
+        const val N = 29
+        const val VERSION = "v3"
 
         /**
          * A tap inside this fraction of a drawn key's box, per axis, always types that key. 0.85 per
@@ -326,12 +340,22 @@ class TouchModel(private val prior: Prior) {
         fun anchored(dx: Float, dy: Float, halfW: Float, halfH: Float): Boolean =
             abs(dx) <= ANCHOR_FRAC * halfW && abs(dy) <= ANCHOR_FRAC * halfH
 
-        /** Restore a serialized model; anything unreadable falls back to the prior, never to zeroes. */
+        /**
+         * Restore a serialized model; anything unreadable falls back to the prior, never to zeroes.
+         *
+         * A `v2` model is 26 slots, from before the big keys were tracked. It is read as far as it
+         * goes and the three new slots keep the prior, because throwing away a model somebody spent a
+         * fortnight teaching over three keys it never knew about would be the wrong trade.
+         */
         fun parse(s: String?, prior: Prior): TouchModel {
             val m = TouchModel(prior)
             val parts = s?.split(';') ?: return m
-            if (parts.size != N + 1 || parts[0] != VERSION) return m
-            for (i in 0 until N) {
+            val slots = when {
+                parts.size == N + 1 && parts[0] == VERSION -> N
+                parts.size == LETTERS + 1 && parts[0] == "v2" -> LETTERS
+                else -> return m
+            }
+            for (i in 0 until slots) {
                 val f = parts[i + 1].split(',')
                 if (f.size != 5) return m
                 val a = FloatArray(5)
@@ -359,7 +383,7 @@ class TouchModel(private val prior: Prior) {
             if (s == null || rowPitchPx <= 0f) return m
             val px = s.split(',').mapNotNull { it.toFloatOrNull() }
             if (px.isEmpty() || px.any { !it.isFinite() }) return m
-            for (i in 0 until N) {
+            for (i in 0 until LETTERS) {
                 val row = rowOfKey(i)
                 val v = px.getOrNull(row) ?: continue
                 m.my[i] = (-v / rowPitchPx).coerceIn(-MEAN_CLAMP, MEAN_CLAMP)

@@ -19,6 +19,7 @@ import app.lightphonekeyboard.text.Emoji
 class EmojiSettingsActivity : AppCompatActivity() {
 
     private val toneChecks = ArrayList<Pair<Int, TextView>>()
+    private val toolsChecks = ArrayList<Pair<String, TextView>>()
     private var suggestToggle: LightToggle? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,12 +65,74 @@ class EmojiSettingsActivity : AppCompatActivity() {
         root.addView(suggestToggle)
         root.addView(label(getString(R.string.emoji_strip_detail), 15f, R.color.gray))
 
+        // What the bottom-row slot does. It lives here rather than on the setup screen because two
+        // of its three answers are about emoji, and because a three-way choice is not a toggle.
+        root.addView(label(getString(R.string.tools_key_heading), 18f, R.color.gray))
+        for (mode in listOf(Prefs.TOOLS_KEY_TOOLS, Prefs.TOOLS_KEY_EMOJI, Prefs.TOOLS_KEY_OFF)) {
+            toolsChecks.add(mode to toolsRow(root, pad, mode))
+        }
+
         refreshChecks()
 
         setContentView(LightScrollView(this).apply {
             setBackgroundColor(getColor(R.color.black))
             addView(root)
         })
+    }
+
+    /** One answer for the bottom-row slot: name, explanation, and a check when it is the live one. */
+    private fun toolsRow(parent: LinearLayout, pad: Int, mode: String): TextView {
+        val name = getString(
+            when (mode) {
+                Prefs.TOOLS_KEY_TOOLS -> R.string.tools_key_tools
+                Prefs.TOOLS_KEY_EMOJI -> R.string.tools_key_emoji
+                else -> R.string.tools_key_off
+            },
+        )
+        val detail = getString(
+            when (mode) {
+                Prefs.TOOLS_KEY_TOOLS -> R.string.tools_key_tools_detail
+                Prefs.TOOLS_KEY_EMOJI -> R.string.tools_key_emoji_detail
+                else -> R.string.tools_key_off_detail
+            },
+        )
+        val labels = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                TextView(this@EmojiSettingsActivity).apply {
+                    text = name
+                    setTextColor(getColor(R.color.white))
+                    textSize = 22f
+                },
+            )
+            addView(
+                TextView(this@EmojiSettingsActivity).apply {
+                    text = detail
+                    setTextColor(getColor(R.color.gray))
+                    textSize = 15f
+                },
+            )
+        }
+        val check = TextView(this).apply {
+            text = "✓"
+            setTextColor(getColor(R.color.white))
+            textSize = 22f
+        }
+        parent.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, pad / 3, 0, pad / 3)
+                isClickable = true
+                setOnClickListener {
+                    Prefs.setToolsKey(this@EmojiSettingsActivity, mode)
+                    refreshChecks()
+                }
+                addView(labels, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(check)
+            },
+        )
+        return check
     }
 
     private fun toneName(tone: Int): String = getString(
@@ -125,6 +188,10 @@ class EmojiSettingsActivity : AppCompatActivity() {
         val tone = Prefs.skinTone(this)
         for ((key, view) in toneChecks) {
             view.visibility = if (key == tone) View.VISIBLE else View.INVISIBLE
+        }
+        val mode = Prefs.toolsKey(this)
+        for ((key, view) in toolsChecks) {
+            view.visibility = if (key == mode) View.VISIBLE else View.INVISIBLE
         }
     }
 

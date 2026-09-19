@@ -20,8 +20,17 @@ import app.lightphonekeyboard.text.TouchModel
  */
 object TouchOverlay {
 
-    /** One key, in the coordinates it is drawn at. */
-    class Cell(val letter: Char, val cx: Float, val cy: Float, val halfW: Float, val halfH: Float)
+    /**
+     * One key, in the coordinates it is drawn at. [unitX]/[unitY] are the units that key's offsets
+     * are stored in — a letter's is the width of a letter key on the longest row, a big key's is its
+     * own width, and the vertical unit is the row pitch throughout.
+     */
+    class Cell(
+        val slot: Int,
+        val cx: Float, val cy: Float,
+        val halfW: Float, val halfH: Float,
+        val unitX: Float, val unitY: Float,
+    )
 
     /** Which layers to paint. Four toggles on [TouchActivity]. */
     class Layers(val center: Boolean, val core: Boolean, val spread: Boolean, val count: Boolean) {
@@ -42,23 +51,15 @@ object TouchOverlay {
     private val countPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val rect = RectF()
 
-    /**
-     * [unitX]/[unitY] are the units the model stores in: a letter key's visible width on the longest
-     * row, and the row pitch. They are not the same as a given cell's own half sizes, because rows
-     * hold different numbers of keys — passing a cell's own width here would draw every offset on the
-     * home and bottom rows too large.
-     */
     fun draw(
         canvas: Canvas,
         cells: List<Cell>,
         model: TouchModel,
         layers: Layers,
-        unitX: Float,
-        unitY: Float,
         density: Float,
         tint: Int,
     ) {
-        if (layers.none || unitX <= 0f || unitY <= 0f) return
+        if (layers.none) return
         val dp = { v: Float -> v * density }
         corePaint.color = tint
         spreadPaint.color = tint
@@ -69,10 +70,10 @@ object TouchOverlay {
         driftPaint.strokeWidth = dp(1f)
 
         for (cell in cells) {
-            val i = cell.letter - 'a'
-            if (i !in 0 until TouchModel.N) continue
-            val lx = cell.cx + model.meanX(i) * unitX
-            val ly = cell.cy + model.meanY(i) * unitY
+            val i = cell.slot
+            if (i !in 0 until TouchModel.N || cell.unitX <= 0f || cell.unitY <= 0f) continue
+            val lx = cell.cx + model.meanX(i) * cell.unitX
+            val ly = cell.cy + model.meanY(i) * cell.unitY
 
             // A key with no history is drawn faintly: nothing about its position has been measured
             // yet, and a crisp line would be a claim.

@@ -17,7 +17,7 @@ import kotlin.math.abs
 class TouchModelTest {
 
     private fun prior(meanY: Float = 0.2f, sx: Float = 0.72f, sy: Float = 0.8f) =
-        TouchModel.Prior(FloatArray(26), FloatArray(26) { meanY }, sx, sy)
+        TouchModel.Prior(FloatArray(TouchModel.N), FloatArray(TouchModel.N) { meanY }, sx, sy)
 
     private val E = 'e' - 'a'
     private val R = 'r' - 'a'
@@ -151,7 +151,7 @@ class TouchModelTest {
     private fun crafted(vararg spec: Pair<Int, FloatArray>): TouchModel {
         val g = Array(TouchModel.N) { floatArrayOf(0f, 0f, 0.5184f, 0.5184f, 500f) }
         for ((i, a) in spec) g[i] = a
-        return TouchModel.parse("v2;" + g.joinToString(";") { it.joinToString(",") }, prior())
+        return TouchModel.parse(TouchModel.VERSION + ";" + g.joinToString(";") { it.joinToString(",") }, prior())
     }
 
     @Test
@@ -209,7 +209,7 @@ class TouchModelTest {
     @Test
     fun `rubbish restores the prior rather than zeroes`() {
         val p = prior(meanY = 0.2f)
-        for (bad in listOf(null, "", "v2", "v1;0,0", "v2;a,b,c,d,e", "v3;" + "0,0,1,1,0;".repeat(26))) {
+        for (bad in listOf(null, "", "v3", "v1;0,0", "v3;a,b,c,d,e", "v9;" + "0,0,1,1,0;".repeat(29))) {
             val m = TouchModel.parse(bad, p)
             assertEquals("'$bad' should leave the prior in place", 0.2f, m.meanY(E), 1e-6f)
         }
@@ -226,10 +226,33 @@ class TouchModelTest {
     }
 
     @Test
+    fun `a model saved before the big keys were tracked still loads`() {
+        // v2 was 26 slots. Refusing it would throw away a fortnight of learning over three keys the
+        // model did not know about at the time.
+        val p = prior(meanY = 0.2f)
+        val g = Array(TouchModel.LETTERS) { floatArrayOf(0.03f, 0.25f, 0.4f, 0.4f, 120f) }
+        val m = TouchModel.parse("v2;" + g.joinToString(";") { it.joinToString(",") }, p)
+        assertEquals("the letters should have come across", 0.25f, m.meanY(E), 1e-3f)
+        assertEquals("120 taps on e", 120f, m.count(E), 1e-3f)
+        assertEquals("space was not in a v2 model, so it keeps the prior",
+            0.2f, m.meanY(TouchModel.SLOT_SPACE), 1e-6f)
+        assertEquals(0f, m.count(TouchModel.SLOT_SPACE), 1e-6f)
+    }
+
+    @Test
+    fun `the big keys are learned like any other`() {
+        val m = TouchModel(prior(meanY = 0f))
+        repeat(80) { m.observe(TouchModel.SLOT_SPACE, 0f, 0.28f) }
+        assertTrue("space did not follow the taps: ${m.meanY(TouchModel.SLOT_SPACE)}",
+            abs(m.meanY(TouchModel.SLOT_SPACE) - 0.28f) < 0.03f)
+        assertEquals("and it must not have moved a letter", 0f, m.meanY(E), 1e-6f)
+    }
+
+    @Test
     fun `a corrupt saved model cannot load an absurd key`() {
         val g = Array(TouchModel.N) { floatArrayOf(0f, 0f, 0.5184f, 0.5184f, 500f) }
         g[E] = floatArrayOf(9f, -9f, 99f, 0.0001f, 9e9f)
-        val m = TouchModel.parse("v2;" + g.joinToString(";") { it.joinToString(",") }, prior())
+        val m = TouchModel.parse(TouchModel.VERSION + ";" + g.joinToString(";") { it.joinToString(",") }, prior())
         assertTrue("mean", abs(m.meanX(E)) <= TouchModel.MEAN_CLAMP + 1e-4f)
         assertTrue("spread", m.sigmaX(E) <= 1f + 1e-3f)
         assertTrue("spread floor", m.sigmaY(E) >= 0.35f - 1e-3f)
