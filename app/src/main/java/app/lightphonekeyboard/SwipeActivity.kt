@@ -26,6 +26,7 @@ class SwipeActivity : AppCompatActivity() {
     private val strengthChecks = ArrayList<Pair<Alternatives.Strength, TextView>>()
     private val countChecks = ArrayList<Pair<Int, TextView>>()
     private val engineChecks = ArrayList<Pair<Boolean, TextView>>()
+    private val deleteChecks = ArrayList<Pair<String, TextView>>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,6 +90,26 @@ class SwipeActivity : AppCompatActivity() {
                 refreshChecks()
             }
             countChecks.add(n to check)
+        }
+
+        // What delete does straight after a trace. Its own setting, because the delete-key choice on
+        // the autocorrect page is between offering the readings and putting your own spelling back,
+        // and a traced word has no spelling of yours to put back.
+        root.addView(label(getString(R.string.swipe_delete_heading), 18f, R.color.gray))
+        for (mode in listOf(Prefs.SWIPE_DELETE_CYCLE, Prefs.SWIPE_DELETE_WORD)) {
+            val name = getString(
+                if (mode == Prefs.SWIPE_DELETE_WORD) R.string.swipe_delete_word
+                else R.string.swipe_delete_cycle,
+            )
+            val detail = getString(
+                if (mode == Prefs.SWIPE_DELETE_WORD) R.string.swipe_delete_word_detail
+                else R.string.swipe_delete_cycle_detail,
+            )
+            val check = option(root, pad, name, detail) {
+                Prefs.setSwipeDelete(this, mode)
+                refreshChecks()
+            }
+            deleteChecks.add(mode to check)
         }
 
         refreshChecks()
@@ -174,6 +195,10 @@ class SwipeActivity : AppCompatActivity() {
         val neural = Prefs.neuralSwipe(this)
         for ((key, view) in engineChecks) {
             view.visibility = if (key == neural) View.VISIBLE else View.INVISIBLE
+        }
+        val delete = Prefs.swipeDelete(this)
+        for ((key, view) in deleteChecks) {
+            view.visibility = if (key == delete) View.VISIBLE else View.INVISIBLE
         }
     }
 }

@@ -281,10 +281,9 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
      * end at the user's own spelling; the setting only decides whether the stops in between are
      * offered. Once the window is closed, or if it was never opened, it deletes.
      *
-     * A swipe is the exception to the setting: a traced word has no "as typed" spelling to revert to,
-     * so cycling is the only way to reach the other readings of the trace and it stays available at
-     * both settings. Turning the setting to Revert makes the keyboard stop second-guessing what you
-     * *typed*; it would not make sense for it to also throw away the alternatives for what you drew.
+     * A swipe does not follow that setting: a traced word has no "as typed" spelling to revert to, so
+     * Revert would have nothing to do. It has a setting of its own instead ([Prefs.swipeDelete]) —
+     * walk the readings, or take the whole traced word out in one press.
      */
     override fun onBackspace() {
         panelQuery?.let { q ->
@@ -312,11 +311,13 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             return
         }
         if (altWords != null) {
-            val cycling = Prefs.deleteAction(this) == Prefs.DELETE_CYCLE || altOriginal.isEmpty()
-            if (cycling) {
-                if (cycleAlternatives(ic)) return
-            } else {
-                if (revertToLiteral(ic)) return
+            val traced = altOriginal.isEmpty()
+            val eraseTrace = traced && Prefs.swipeDelete(this) == Prefs.SWIPE_DELETE_WORD
+            when {
+                eraseTrace -> if (deleteTracedWord(ic)) return
+                Prefs.deleteAction(this) == Prefs.DELETE_CYCLE || traced ->
+                    if (cycleAlternatives(ic)) return
+                else -> if (revertToLiteral(ic)) return
             }
         }
         val from = undoFrom
@@ -1553,6 +1554,32 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             clearAlternatives()
             clearUndo()
         }
+        refreshSuggestions()
+        return true
+    }
+
+    /**
+     * Take the whole traced word back out in one press, which is [Prefs.SWIPE_DELETE_WORD].
+     *
+     * A swipe puts a word in with one gesture, so one press taking it out is the symmetric undo, and
+     * for a trace that read completely wrong it beats stepping through three more wrong readings to
+     * reach a delete. What goes is everything the swipe committed, the leading space included: the
+     * next swipe will put its own space back, and leaving a stranded one behind would be litter.
+     *
+     * The readings are not lost by choosing this. They are in the suggestion strip, where a tap picks
+     * one directly.
+     */
+    private fun deleteTracedWord(ic: InputConnection): Boolean {
+        val committed = altCommitted ?: return false
+        // Same guard as the other two routes: never overwrite text this keyboard did not just put
+        // there. The caret may have moved or the app may have rewritten the field.
+        if (ic.getTextBeforeCursor(committed.length, 0)?.toString() != committed) {
+            clearAlternatives()
+            return false
+        }
+        clearAlternatives()
+        clearUndo()
+        ic.deleteSurroundingText(committed.length, 0)
         refreshSuggestions()
         return true
     }

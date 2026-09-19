@@ -116,6 +116,11 @@
     <string name="swipe_balanced_detail">Recommended.</string>
     <string name="swipe_eager">Eager</string>
     <string name="swipe_eager_detail">Always finds a word, even for a rough trace. More wrong guesses.</string>
+    <string name="swipe_delete_heading">Delete after a swipe</string>
+    <string name="swipe_delete_cycle">Walk the readings</string>
+    <string name="swipe_delete_cycle_detail">Each press shows the next-best reading of the trace. The last one deletes.</string>
+    <string name="swipe_delete_word">Delete the word</string>
+    <string name="swipe_delete_word_detail">One press takes the whole traced word back out, the way one gesture put it in. The other readings stay in the suggestion strip.</string>
     <string name="swipe_alts_heading">WORDS DELETE OFFERS</string>
     <string name="swipe_alts_blurb">The word you drew is almost always in the first four. More of them means fewer retypes when it is not the first.</string>
     <string name="swipe_alts_n">%1$d words</string>

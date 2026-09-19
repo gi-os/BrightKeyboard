@@ -34,6 +34,7 @@ object Prefs {
     private const val KEY_EMOJI_SUGGEST = "emoji_suggest"
     private const val KEY_SWIPE_STRENGTH = "swipe_strength"
     private const val KEY_SWIPE_ALTERNATES = "swipe_alternates"
+    private const val KEY_SWIPE_DELETE = "swipe_delete"
     private const val KEY_HIDE_KEY = "hide_key"
     private const val KEY_ONE_HANDED = "one_handed"
     private const val KEY_CLIPBOARD = "clipboard_enabled"
@@ -90,6 +91,17 @@ object Prefs {
      */
     const val DELETE_CYCLE = "cycle"
     const val DELETE_REVERT = "revert"
+
+    /**
+     * What the delete key does straight after a swipe, where [DELETE_REVERT] has nothing to offer: a
+     * traced word has no "as typed" spelling to put back, so the setting above does not apply to it.
+     *
+     * [SWIPE_DELETE_CYCLE] walks the other readings of the trace, as it always has.
+     * [SWIPE_DELETE_WORD] takes the whole traced word back out in one press, the way one gesture put
+     * it in. The other readings are still in the suggestion strip either way.
+     */
+    const val SWIPE_DELETE_CYCLE = "cycle"
+    const val SWIPE_DELETE_WORD = "word"
 
     private fun prefs(c: Context) = c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -188,6 +200,13 @@ object Prefs {
 
     fun setSwipeAlternates(c: Context, value: Int) =
         prefs(c).edit().putInt(KEY_SWIPE_ALTERNATES, value.coerceIn(2, 8)).apply()
+
+    /** [SWIPE_DELETE_CYCLE] or [SWIPE_DELETE_WORD]. */
+    fun swipeDelete(c: Context): String =
+        prefs(c).getString(KEY_SWIPE_DELETE, SWIPE_DELETE_CYCLE) ?: SWIPE_DELETE_CYCLE
+
+    fun setSwipeDelete(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_SWIPE_DELETE, value).apply()
 
     /** Swipe typing: drag across the letters to write a whole word. On by default. */
     fun swipeTyping(c: Context): Boolean = prefs(c).getBoolean(KEY_SWIPE, true)
