@@ -60,7 +60,7 @@ class MigrationActivity : AppCompatActivity() {
                     }
                 },
             )
-            setContentView(root)
+            show(root)
             return
         }
 
@@ -92,6 +92,22 @@ class MigrationActivity : AppCompatActivity() {
             },
         )
         root.addView(status)
-        setContentView(root)
+        show(root)
+    }
+
+    /**
+     * Scrolled, like every other screen in this app.
+     *
+     * This one has more text on it than any of them and ends in the only control that matters, so
+     * on a short screen an unscrolled column put GET THE NEW ONE below the glass -- the migration
+     * stalling on the one tap it asks for.
+     */
+    private fun show(root: android.view.View) {
+        setContentView(
+            LightScrollView(this).apply {
+                setBackgroundColor(getColor(R.color.black))
+                addView(root)
+            },
+        )
     }
 }
