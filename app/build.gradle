@@ -59,7 +59,12 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'app.lightphonekeyboard'
+        // Not the package the sources live in, and deliberately so. `namespace` stays
+        // app.lightphonekeyboard because it names the Kotlin package and moving it would rewrite
+        // every file for no gain; the applicationId is the install identity, and that is the thing
+        // that belonged to somebody else. See Migration.kt for what it cost and how it is handed
+        // over.
+        applicationId 'com.gios.brightkeyboard'
         minSdk 26
         targetSdk 35
         // CI derives these from the pushed Git tag (see .github/workflows/release.yml) so the APK's

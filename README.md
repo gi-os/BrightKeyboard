@@ -21,7 +21,9 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v3.0.x** (tag `v3.0.<n>`). `applicationId` is `app.lightphonekeyboard`.
+**Current release: v4.0.x** (tag `v4.0.<n>`). `applicationId` is `com.gios.brightkeyboard`.
+
+It was `app.lightphonekeyboard` up to v3.11, which is the id of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard), the project this is a fork of. Keeping it stopped him shipping his own keyboard to a phone that had this one, so it went back. v3.11 hands its settings, saved words and learned touch model to v4.0 on first launch — see [`Migration.kt`](app/src/main/java/app/lightphonekeyboard/Migration.kt).
 
 ## Why this exists
 

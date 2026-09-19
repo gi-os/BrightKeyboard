@@ -25,6 +25,10 @@
              for it on Android 11+ exactly as it does for a package that isn't installed, so the
              notice could never tell "already moved" from "not yet" and would nag forever. -->
         <package android:name="com.gios.brightkeyboard" />
+        <!-- And the id being left behind, so the NEW build can resolve the old app's migration
+             authority. call() on a provider this app cannot see fails exactly as it does when the
+             package is absent, which would lose every setting the move exists to carry. -->
+        <package android:name="app.lightphonekeyboard" />
         <package android:name="com.gios.lightchat" />
         <intent>
             <action android:name="android.speech.RecognitionService" />
