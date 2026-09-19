@@ -192,7 +192,10 @@ from the sample.
 third of a key and no further. Past that the keyboard would be guessing at your intent rather than
 correcting for how a fingertip is sensed, which is the only job it has.
 
-The model is 26 numbers a side. It lives in this app's own settings, goes nowhere else, and is sent
+Space, return and delete are in it too, on the same terms. Their sideways offset is measured against
+their own width rather than a letter's, since a space bar is five cells wide.
+
+The model is 29 numbers a side. It lives in this app's own settings, goes nowhere else, and is sent
 nowhere at all. Key units rather than pixels, so changing the keyboard height keeps it.
 
 **Touch**, in settings, turns on an overlay that draws all of it **on the keys themselves**. Each key
@@ -340,6 +343,27 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v3.4.x** (2026-09-18) — **Space learns too, and the letters can come off.**
+
+  **Space, return and delete are now in the touch model.** They are missed in ways a letter is not.
+  They sit at the edges. They are reached rather than aimed at, and the miss runs mostly one way.
+
+  Each one learns where your taps for it land, and the boundary with its neighbors moves by that
+  much. A letter's anchored core still wins outright, so a growing space bar cannot cost you a letter
+  you hit squarely. Their sideways offset is measured against their own width, not a letter's: a
+  space bar is five cells across, so a miss in letter-widths would mean nothing.
+
+  **Hide the letters.** A switch on the Touch page takes the labels off. It leaves a bump under F and
+  J, the way a real keyboard does, and space, return and delete stay where they are. This is the point
+  of all the above, said out loud. After a while you are not reading the keyboard. You are reaching
+  for it. Nothing has moved, and the press flash still lands where you touched.
+
+  **The toolbox page has a back key.** Its bottom row used to be the keyboard's own: space, return,
+  ABC. That made a page of tiles look like somewhere you could type. One key across the bottom now.
+
+  **The key beside space can be the emoji key.** Toolbox, emoji, or nothing, under Emoji settings.
+  Anyone who only ever opened the toolbox to reach emoji was paying two taps for one.
 
 - **v3.3.x** (2026-09-18) — **The overlay moved onto the keys.**
 
