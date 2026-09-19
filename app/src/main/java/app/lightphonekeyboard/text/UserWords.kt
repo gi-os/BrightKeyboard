@@ -78,7 +78,17 @@ class UserWords private constructor(
             return w.length in 2..MAX_LENGTH && w.all { it.isLetter() || it == '\'' }
         }
 
-        fun of(words: List<String>, importedWords: List<String> = emptyList()): UserWords {
+        /**
+         * [packDisplay] is a language pack's folded-to-written map. It joins [display] and nothing
+         * else: those words are already in the main dictionary, so adding them here would double
+         * them, and they are nobody's personal list, so they do not belong in [entries]. It is last,
+         * so a name the user typed themselves keeps their spelling.
+         */
+        fun of(
+            words: List<String>,
+            importedWords: List<String> = emptyList(),
+            packDisplay: Map<String, String> = emptyMap(),
+        ): UserWords {
             val kept = ArrayList<String>()
             val keptImported = ArrayList<String>()
             val display = HashMap<String, String>()
@@ -93,15 +103,23 @@ class UserWords private constructor(
                     out.add(w)
                 }
             }
-            if (kept.isEmpty() && keptImported.isEmpty()) return EMPTY
+            for ((key, written) in packDisplay) if (!display.containsKey(key)) display[key] = written
+            if (kept.isEmpty() && keptImported.isEmpty()) {
+                return if (display.isEmpty()) EMPTY
+                else UserWords(emptyList(), emptyList(), display, null)
+            }
             val all = kept + keptImported
             val dict = Dictionary.of(all.map { Folding.fold(it) to LOG_FREQ })
             return UserWords(kept, keptImported, display, dict)
         }
 
-        fun deserialize(stored: String?, importedWords: List<String> = emptyList()): UserWords {
-            if (stored.isNullOrBlank() && importedWords.isEmpty()) return EMPTY
-            return of(stored?.split("\n").orEmpty(), importedWords)
+        fun deserialize(
+            stored: String?,
+            importedWords: List<String> = emptyList(),
+            packDisplay: Map<String, String> = emptyMap(),
+        ): UserWords {
+            if (stored.isNullOrBlank() && importedWords.isEmpty() && packDisplay.isEmpty()) return EMPTY
+            return of(stored?.split("\n").orEmpty(), importedWords, packDisplay)
         }
     }
 }

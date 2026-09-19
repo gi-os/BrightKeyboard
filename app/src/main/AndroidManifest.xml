@@ -111,6 +111,12 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
+        <!-- Which dictionary language is in use, and downloading it the first time. -->
+        <activity
+            android:name=".LanguagesActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
         <!-- The learned touch targets, drawn, with a field to type in. adjustResize so the keyboard
              opening shrinks the window rather than sliding the map off the top of it. -->
         <activity

@@ -21,6 +21,7 @@ object Prefs {
     private const val KEY_TOUCH_MODEL = "touch_model"
     private const val KEY_TOUCH_MAP = "touch_map_"
     private const val KEY_TOUCH_OVERLAY = "touch_overlay"
+    private const val KEY_LANGUAGE = "language"
     private const val KEY_BLANK_LETTERS = "blank_letters"
     private const val KEY_TOOLS_KEY = "tools_key"
     private const val KEY_LAYOUT = "key_layout"
@@ -324,6 +325,12 @@ object Prefs {
 
     fun setToolsKey(c: Context, value: String) =
         prefs(c).edit().putString(KEY_TOOLS_KEY, value).apply()
+
+    /** The dictionary language in use: "en", or a pack code. English needs no pack and is the default. */
+    fun language(c: Context): String = prefs(c).getString(KEY_LANGUAGE, "en") ?: "en"
+
+    fun setLanguage(c: Context, code: String) =
+        prefs(c).edit().putString(KEY_LANGUAGE, code).apply()
 
     /** Take the letters off the keys and leave a bump under F and J. Off by default, obviously. */
     fun blankLetters(c: Context): Boolean = prefs(c).getBoolean(KEY_BLANK_LETTERS, false)

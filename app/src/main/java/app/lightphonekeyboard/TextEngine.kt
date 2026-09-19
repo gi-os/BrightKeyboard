@@ -122,8 +122,13 @@ class TextEngine(private val context: Context) {
         if (dictionary != null || loading) return
         loading = true
         Thread({
+            // A language pack replaces the bundled list rather than joining it. Two languages at
+            // once would mean two frequency scales in one ranking, and a word common in one of them
+            // outranking the word you meant in the other.
+            val pack = LangPack.load(context, Prefs.language(context))
             val loaded = try {
-                context.resources.openRawResource(R.raw.words).use { Dictionary.load(it) }
+                pack?.dictionary
+                    ?: context.resources.openRawResource(R.raw.words).use { Dictionary.load(it) }
             } catch (e: Exception) {
                 // Missing or corrupt asset. Autocorrect falls back to the system spell checker and
                 // swipe typing stays off; the keyboard itself is unaffected.
@@ -136,7 +141,9 @@ class TextEngine(private val context: Context) {
                 val s = Suggester(loaded, c)
                 val sp = WordSplitter(loaded)
                 pendingGrid?.let { c.grid = it; d.grid = it; sp.grid = it }
-                val words = UserWords.deserialize(Prefs.userWords(context), CustomWords.load(context))
+                val words = UserWords.deserialize(
+                    Prefs.userWords(context), CustomWords.load(context), pack?.display.orEmpty(),
+                )
                 c.userWords = words
                 d.userWords = words
                 s.userWords = words
