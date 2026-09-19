@@ -32,6 +32,22 @@ object CustomWords {
 
     fun count(c: Context): Int = load(c).size
 
+    /**
+     * The stored list as the file's own text, or null when there isn't one.
+     *
+     * Exists for the applicationId move ([Migration]): a new applicationId is a new app to Android
+     * and gets none of this, so it has to be handed over. Raw text rather than the parsed list,
+     * because the file is the format and round-tripping through a List would quietly normalise
+     * whatever the user imported.
+     */
+    internal fun raw(c: Context): String? =
+        runCatching { file(c).takeIf { it.exists() }?.readText() }.getOrNull()
+
+    /** Counterpart to [raw]: replace the stored list wholesale. */
+    internal fun restore(c: Context, text: String) {
+        runCatching { file(c).writeText(text) }
+    }
+
     fun clear(c: Context) {
         runCatching { file(c).delete() }
     }

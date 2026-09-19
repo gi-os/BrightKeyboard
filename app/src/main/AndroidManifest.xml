@@ -10,7 +10,21 @@
          package entry the ContentResolver cannot see that authority at all and the lookup fails
          the same way it does on a phone where LightChat isn't installed — which is to say
          silently, and indistinguishably from "no code has arrived". -->
+    <!-- Signature-level: Android grants it only to a package carrying the same certificate, so the
+         only caller that can ever read the migration provider is another build of this keyboard.
+         Declared by BOTH builds under one fixed name. Two apps declaring one permission is an
+         install conflict unless they are signed by the same key — these are, and the CI check on
+         signing-fingerprint.txt is what keeps that true. -->
+    <permission
+        android:name="app.lightphonekeyboard.permission.MIGRATE"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="app.lightphonekeyboard.permission.MIGRATE" />
+
     <queries>
+        <!-- The applicationId this keyboard is moving to. Without the entry, getPackageInfo throws
+             for it on Android 11+ exactly as it does for a package that isn't installed, so the
+             notice could never tell "already moved" from "not yet" and would nag forever. -->
+        <package android:name="com.gios.brightkeyboard" />
         <package android:name="com.gios.lightchat" />
         <intent>
             <action android:name="android.speech.RecognitionService" />
@@ -37,6 +51,23 @@
                 android:name="android.view.im"
                 android:resource="@xml/method" />
         </service>
+
+        <!-- Hands this app's settings and saved words to the build that replaces it. See Migration.
+             The authority carries ${applicationId} on purpose: both builds compile this manifest,
+             and two installed apps declaring ONE authority is INSTALL_FAILED_CONFLICTING_PROVIDER
+             — the new keyboard would refuse to install beside the old one, which is the single
+             thing this whole move depends on being possible. -->
+        <provider
+            android:name=".MigrationProvider"
+            android:authorities="${applicationId}.migration"
+            android:exported="true"
+            android:permission="app.lightphonekeyboard.permission.MIGRATE" />
+
+        <!-- What the notice in the keyboard opens: why the app is moving, and the way across. -->
+        <activity
+            android:name=".MigrationActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
 
         <!-- Transparent shim: requests RECORD_AUDIO on the IME's behalf (an IME can't ask directly). -->
         <activity

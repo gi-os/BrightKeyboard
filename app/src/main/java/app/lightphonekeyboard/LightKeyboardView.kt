@@ -1,6 +1,7 @@
 package app.lightphonekeyboard
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -659,6 +660,40 @@ class LightKeyboardView @JvmOverloads constructor(
     // threading a fourth kind of cell through that would put dead zones between the strip and the keys.
     private var suggestions: List<StripItem> = emptyList()
     private var pressedSuggestion = -1
+
+    /* ---- The applicationId move ------------------------------------------------------------
+       The keyboard is giving `app.lightphonekeyboard` back to the project it was forked from, so
+       the legacy build has to say so where it cannot be missed. It says it in the suggestion strip:
+       one line, always there, never over a keystroke. A dialog on every open would be the version
+       of this that gets the app uninstalled out of spite, and the row above the keys is the only
+       surface a keyboard owns that is already part of the furniture.
+
+       Cached, because the answer costs a PackageManager lookup and the question is asked from
+       layout and from draw. Re-asked when the keyboard is reset, which is every time it opens, so
+       "already installed" is noticed within one appearance of finishing the job. */
+    private var migrationNotice: Migration.Notice? = null
+    private var migrationPressed = false
+
+    private val migrating: Boolean get() = migrationNotice != null
+
+    private fun refreshMigrationNotice() {
+        migrationNotice = Migration.notice(context)
+    }
+
+    /**
+     * Open the explanation.
+     *
+     * NEW_TASK because the caller is an input method, which has no task of its own to put an
+     * activity into; without it this throws and the one tap the notice asks for does nothing.
+     */
+    private fun openMigration() {
+        runCatching {
+            context.startActivity(
+                Intent(context, MigrationActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
     /** Height of the strip, or 0 when it isn't shown. Everything below shifts down by this. */
     private var stripH = 0f
 
@@ -1424,7 +1459,10 @@ class LightKeyboardView @JvmOverloads constructor(
      * The strip is up for the suggestions setting, because a search needs somewhere to appear, or
      * because the keyboard has something brief to say. See [flash].
      */
-    private val stripShowing: Boolean get() = suggestionsOn || searchQuery != null || flashMessage != null
+    // `migrating` is in here so the notice is visible to somebody who has turned suggestions off.
+    // Without it the strip has no height on exactly the phones whose owner reads the least chrome.
+    private val stripShowing: Boolean
+        get() = suggestionsOn || searchQuery != null || flashMessage != null || migrating
 
     /**
      * Say something for a couple of seconds, in the strip.
@@ -1576,6 +1614,20 @@ class LightKeyboardView @JvmOverloads constructor(
             val baseline = stripH / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
             val shown = if (q.isEmpty()) searchHint ?: context.getString(R.string.emoji_search_hint) else "$q…"
             canvas.drawText(fitToWidth(shown, width - dpf(20)), width / 2f, baseline, textPaint)
+            return
+        }
+        // Under a search and under a flash, because both are transient and both are answers to
+        // something the user just did. Over the suggestions, because it is not one and tapping it
+        // must not insert a word.
+        migrationNotice?.let { notice ->
+            if (migrationPressed) canvas.drawRect(0f, 0f, width.toFloat(), stripH, pressPaint)
+            textPaint.textSize = stripTextSize
+            val baseline = stripH / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
+            val line = context.getString(
+                if (notice == Migration.Notice.DONE) R.string.migrate_strip_done
+                else R.string.migrate_strip_move,
+            )
+            canvas.drawText(fitToWidth(line, width - dpf(20)), width / 2f, baseline, textPaint)
             return
         }
         val slotW = width / Suggester.SLOTS.toFloat()
@@ -2100,6 +2152,14 @@ class LightKeyboardView @JvmOverloads constructor(
                 // that is what makes fast typing feel immediate and stops letters being dropped when a
                 // finger rolls off; a suggestion is a deliberate, one-off tap where the cost of getting
                 // it wrong is a whole word, so it gets the chance to be cancelled by sliding off.
+                // The notice owns the whole strip while it is up, so it is checked before the
+                // slots rather than through them: there are no suggestions to hit up there.
+                if (migrating && ev.y < stripH) {
+                    migrationPressed = true
+                    firstKeyRetractable = false
+                    invalidate()
+                    return true
+                }
                 val slot = suggestionSlotAt(ev.x, ev.y)
                 if (slot >= 0) {
                     pressedSuggestion = slot
@@ -2127,6 +2187,12 @@ class LightKeyboardView @JvmOverloads constructor(
 
             MotionEvent.ACTION_MOVE -> {
                 velocityTracker?.addMovement(ev)
+                if (migrationPressed) {
+                    // Leaving the strip drops the highlight, so the finger is never holding a lit
+                    // button it is no longer on.
+                    if (ev.y >= stripH) { migrationPressed = false; invalidate() }
+                    return true
+                }
                 if (pressedSuggestion >= 0) {
                     // Slide off the slot and the tap is abandoned, the usual button behaviour.
                     val still = suggestionSlotAt(ev.x, ev.y)
@@ -2203,6 +2269,14 @@ class LightKeyboardView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_UP -> {
+                if (migrationPressed) {
+                    migrationPressed = false
+                    invalidate()
+                    // Slide off and it is abandoned, the same as a suggestion. This one opens a
+                    // screen, so a mistaken tap costs more than a wrong word.
+                    if (ev.y < stripH) { tap(); openMigration() }
+                    return true
+                }
                 val slot = pressedSuggestion
                 pressedSuggestion = -1
                 pressed.clear()
@@ -2225,6 +2299,7 @@ class LightKeyboardView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                migrationPressed = false
                 pressedSuggestion = -1
                 suggestionForgotten = false
                 pressed.clear()
@@ -3307,6 +3382,8 @@ class LightKeyboardView @JvmOverloads constructor(
      *  settings takes effect next time the keyboard opens. Initial uppercase follows Auto-Capitalize
      *  (the IME's updateShift refines it immediately). */
     fun reset(numeric: Boolean = false) {
+        refreshMigrationNotice()
+        migrationPressed = false
         stopBackspaceRepeat()
         abandonTrace()
         suggestions = emptyList()

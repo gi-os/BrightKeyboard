@@ -198,4 +198,20 @@
     <string name="tool_size">Size and place</string>
     <string name="adjust_hint">Drag to move it. Pinch to resize it.</string>
     <string name="adjust_done">Done</string>
+
+    <!-- Giving app.lightphonekeyboard back to the upstream author. See Migration.kt. -->
+    <string name="migrate_strip_move">Moving to a new app \u2014 tap to switch</string>
+    <string name="migrate_strip_done">All moved \u2014 tap to remove this one</string>
+    <string name="migrate_title">BrightKeyboard is moving to a new app</string>
+    <string name="migrate_why">This keyboard is a fork of Adam Weber\'s light-keyboard. When I forked it I kept his app ID, and that turned out to block him from listing his own keyboard. So I\'m giving the ID back and taking one of my own.</string>
+    <string name="migrate_install_note">Android treats a new ID as a new app, so this is an install, not an update.</string>
+    <string name="migrate_step_1">1 \u00b7 Install the new BrightKeyboard</string>
+    <string name="migrate_step_2">2 \u00b7 Open it once. Your settings, saved words and the typing model it learned come across automatically.</string>
+    <string name="migrate_step_3">3 \u00b7 Uninstall this one</string>
+    <string name="migrate_same">Nothing else changes. Same keyboard, same key, same repo.</string>
+    <string name="migrate_get">GET THE NEW ONE</string>
+    <string name="migrate_no_route">Couldn\'t open BrightMarket. Search for BrightKeyboard there, or find it at brightmarket.gzl.dev.</string>
+    <string name="migrate_done_title">All moved</string>
+    <string name="migrate_done_blurb">The new BrightKeyboard is installed. Pick it in your keyboard settings if you haven\'t yet, then remove this one \u2014 it stops getting updates from here.</string>
+    <string name="migrate_uninstall">REMOVE THIS ONE</string>
 </resources>
