@@ -195,4 +195,7 @@
         <string name="lang_downloading">Downloading…</string>
     <string name="lang_failed">Could not download: %1$s</string>
     <string name="lang_note">The keys do not change. A missing accent key costs nothing, because typing cafe finds café and ol finds øl. Pick the key arrangement itself under Keyboard layout. A language whose letters are not a to z cannot be used here, and says so when you try.</string>
+    <string name="tool_size">Size and place</string>
+    <string name="adjust_hint">Drag to move it. Pinch to resize it.</string>
+    <string name="adjust_done">Done</string>
 </resources>

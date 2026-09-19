@@ -369,6 +369,13 @@ class LightKeyboardView @JvmOverloads constructor(
     private var touchOverlay = false
     private var touchLayers = TouchOverlay.Layers(true, true, true, true)
     private var blankLetters = false
+
+    // Where the typist has put the keyboard and how big they made it. See Prefs.kbWidth and friends,
+    // and [adjusting] for the mode that sets them.
+    private var kbWidth = 1f
+    private var kbAlign = 0.5f
+    private var kbLift = 0f
+    private var kbScale = 1f
     private var toolsKeyMode = Prefs.TOOLS_KEY_TOOLS
     private var haptics = true
     private var suggestionsOn = false
@@ -475,6 +482,12 @@ class LightKeyboardView @JvmOverloads constructor(
                 keyTextSize = spf(26); labelTextSize = spf(18); emojiTextSize = spf(30)
             }
         }
+        // The typist's own scale on top of the preset. Text scales with the keys or a tall
+        // keyboard is a grid of small letters in big boxes.
+        if (kbScale != 1f) {
+            padTop *= kbScale; padBottom *= kbScale; rowKeyH *= kbScale
+            keyTextSize *= kbScale; labelTextSize *= kbScale; emojiTextSize *= kbScale
+        }
         rowPitch = rowKeyH + keyGap * 2
         // Deliberately small — about half a key. It is a glance target, not a row of buttons, and the
         // keyboard is a clone of a design that has no suggestion bar at all, so the less of one it adds
@@ -504,6 +517,10 @@ class LightKeyboardView @JvmOverloads constructor(
         touchOverlay = Prefs.touchOverlay(context)
         touchLayers = TouchOverlay.Layers.from(context)
         blankLetters = Prefs.blankLetters(context)
+        kbWidth = Prefs.kbWidth(context)
+        kbAlign = Prefs.kbAlign(context)
+        kbLift = Prefs.kbLift(context)
+        kbScale = Prefs.kbScale(context)
         haptics = Prefs.haptics(context)
         hiddenKeys.clear()
         if (!Prefs.voiceEnabled(context)) hiddenKeys.add(Key.MIC)
@@ -752,7 +769,9 @@ class LightKeyboardView @JvmOverloads constructor(
             else -> currentRows.size
         }
         val h = stripTop + padTop + rowCount * rowPitch + padBottom
-        setMeasuredDimension(w, h.toInt())
+        // Lift floats the keyboard off the bottom edge. The keys stay laid out from the top of the
+        // view, so the extra height is empty space underneath them — which is the whole trick.
+        setMeasuredDimension(w, (h * (1f + kbLift)).toInt())
     }
 
     /**
@@ -955,18 +974,26 @@ class LightKeyboardView @JvmOverloads constructor(
     // ------------------------------------------------------ one-handed / tools / clipboard
 
     /** True when the keys are crowded against one edge. See [Prefs.oneHanded]. */
-    private val narrowed: Boolean get() = oneHanded != Prefs.HAND_OFF
+    /** True whenever there is a gutter beside the keys, whoever put it there. */
+    private val narrowed: Boolean get() = oneHanded != Prefs.HAND_OFF || kbWidth < 0.97f
 
     /**
      * Width of the band the keys are laid out in. Four fifths of the screen when narrowed, which is
      * about the reach of one thumb on this phone without also making every key too small to hit.
      */
     private val contentW: Float
-        get() = if (narrowed) width * ONE_HANDED_FRACTION else width.toFloat()
+        get() = width * kbWidth * (if (oneHanded != Prefs.HAND_OFF) ONE_HANDED_FRACTION else 1f)
 
     /** Left edge of that band. */
     private val contentLeft: Float
-        get() = if (oneHanded == Prefs.HAND_RIGHT) width - contentW else 0f
+        get() {
+            val slack = width - contentW
+            return when (oneHanded) {
+                Prefs.HAND_RIGHT -> slack
+                Prefs.HAND_LEFT -> 0f
+                else -> slack * kbAlign
+            }
+        }
 
     /**
      * The button in the strip a narrowed keyboard leaves empty.
@@ -1268,7 +1295,6 @@ class LightKeyboardView @JvmOverloads constructor(
      * Which side one-handed mode starts on. The right, because most people are right-handed and the
      * tile is a toggle rather than a chooser — the setting screen has both, this has to pick one.
      */
-    private fun defaultHand(): String = Prefs.HAND_RIGHT
 
     /**
      * Apply [change] to the *stored* history and save the result.
@@ -1461,6 +1487,7 @@ class LightKeyboardView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (listening) { drawListening(canvas); return }
+        if (adjusting) { for (pk in placed) drawKey(canvas, pk); drawAdjustChrome(canvas); return }
         for (pk in placed) {
             val down = pk.id != Key.CLIP_BLANK && (
                 pressed.containsValue(pk) ||
@@ -2003,10 +2030,8 @@ class LightKeyboardView @JvmOverloads constructor(
         Key.TOOL_EMOJI -> context.getString(R.string.tool_emoji)
         Key.TOOL_GIFS -> context.getString(R.string.tool_gifs)
         Key.TOOL_HIDE -> context.getString(R.string.tool_hide)
-        // The tile says what tapping it will do, not what is currently true: "One-handed" turns it
-        // on, "Full width" turns it off. A tile labelled with a state leaves you guessing which.
-        Key.TOOL_HAND ->
-            context.getString(if (narrowed) R.string.tool_full_width else R.string.tool_one_handed)
+        // The tile says what tapping it will do, not what is currently true.
+        Key.TOOL_HAND -> context.getString(R.string.tool_size)
         Key.CLIP_CLEAR -> context.getString(R.string.clip_clear)
         else ->
             if (shifted && layer == Layer.LETTERS && id.length == 1 && id[0].isLetter()) id.uppercase()
@@ -2054,6 +2079,7 @@ class LightKeyboardView @JvmOverloads constructor(
     // ------------------------------------------------------------------ touch
 
     override fun onTouchEvent(ev: MotionEvent): Boolean {
+        if (adjusting) return onAdjustTouch(ev)
         if (listening) {
             if (ev.actionMasked == MotionEvent.ACTION_DOWN) { tap(); listener?.onMicCancel() }
             return true
@@ -2804,6 +2830,122 @@ class LightKeyboardView @JvmOverloads constructor(
     // The tap-accuracy tunables and the touch model itself are declared ABOVE init{}, with the rest
     // of the geometry — init calls rebuild(), which reaches rebasePrior() through publishKeyGrid().
 
+    // ------------------------------------------------------------------ moving and resizing
+    //
+    // Drag the keyboard where you want it, pinch it to the size you want. Everything is stored as a
+    // fraction of the screen rather than in pixels, so it survives a rotation and means the same
+    // thing on another phone. One-handed mode is the same idea with two presets, and still works;
+    // this is the version without presets.
+
+    private var adjusting = false
+    private var adjustFrom = 0f
+    private var adjustFromY = 0f
+    private var adjustSpanX = 0f
+    private var adjustSpanY = 0f
+    private var startAlign = 0.5f
+    private var startLift = 0f
+    private var startWidth = 1f
+    private var startScale = 1f
+
+    fun startAdjusting() {
+        adjusting = true
+        layer = Layer.LETTERS
+        rebuild()
+    }
+
+    private fun stopAdjusting(save: Boolean) {
+        if (save) Prefs.setKbGeometry(context, kbWidth, kbAlign, kbLift, kbScale)
+        adjusting = false
+        applyPrefs()
+        rebuild()
+    }
+
+    /** The strip along the bottom of the lifted area: what to do, and how to finish. */
+    private fun adjustBarRect(): RectF {
+        val top = (height - dpf(52)).coerceAtLeast(height * 0.82f)
+        return RectF(0f, top, width.toFloat(), height.toFloat())
+    }
+
+    private fun drawAdjustChrome(canvas: Canvas) {
+        val board = RectF(contentLeft, stripTop, contentLeft + contentW,
+            stripTop + padTop + currentRows.size * rowPitch + padBottom)
+        adjustPaint.style = Paint.Style.STROKE
+        adjustPaint.strokeWidth = dpf(1)
+        adjustPaint.alpha = 140
+        canvas.drawRoundRect(board, dpf(6), dpf(6), adjustPaint)
+        val bar = adjustBarRect()
+        adjustPaint.style = Paint.Style.FILL
+        adjustPaint.alpha = 20
+        canvas.drawRect(bar, adjustPaint)
+        textPaint.textSize = spf(13)
+        textPaint.alpha = 190
+        canvas.drawText(context.getString(R.string.adjust_hint), width / 2f,
+            bar.centerY() - dpf(8), textPaint)
+        textPaint.textSize = spf(16)
+        textPaint.alpha = 255
+        canvas.drawText(context.getString(R.string.adjust_done), width / 2f,
+            bar.centerY() + dpf(14), textPaint)
+    }
+
+    private val adjustPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+
+    /**
+     * Touch while adjusting. One finger moves it, two resize it, and the bar at the bottom finishes.
+     *
+     * Nothing here types. The keys are still drawn, because the thing being sized is the keys and a
+     * grey rectangle would not tell anyone whether their thumb reaches the a.
+     */
+    private fun onAdjustTouch(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (adjustBarRect().contains(ev.x, ev.y)) { stopAdjusting(true); return true }
+                adjustFrom = ev.x; adjustFromY = ev.y
+                startAlign = kbAlign; startLift = kbLift
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (ev.pointerCount >= 2) {
+                    adjustSpanX = abs(ev.getX(1) - ev.getX(0))
+                    adjustSpanY = abs(ev.getY(1) - ev.getY(0))
+                    startWidth = kbWidth; startScale = kbScale
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (ev.pointerCount >= 2) {
+                    // Each axis on its own: people pinch diagonally and mean one of the two.
+                    val sx = abs(ev.getX(1) - ev.getX(0))
+                    val sy = abs(ev.getY(1) - ev.getY(0))
+                    if (adjustSpanX > dpf(24)) {
+                        kbWidth = (startWidth * (sx / adjustSpanX)).coerceIn(Prefs.KB_WIDTH_MIN, 1f)
+                    }
+                    if (adjustSpanY > dpf(24)) {
+                        kbScale = (startScale * (sy / adjustSpanY))
+                            .coerceIn(Prefs.KB_SCALE_MIN, Prefs.KB_SCALE_MAX)
+                    }
+                    applyScaleNow()
+                } else {
+                    val slack = (width - contentW).coerceAtLeast(1f)
+                    kbAlign = (startAlign + (ev.x - adjustFrom) / slack).coerceIn(0f, 1f)
+                    val base = (height / (1f + kbLift)).coerceAtLeast(1f)
+                    kbLift = (startLift - (ev.y - adjustFromY) / base).coerceIn(0f, Prefs.KB_LIFT_MAX)
+                    requestLayout()
+                }
+                invalidate()
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                Prefs.setKbGeometry(context, kbWidth, kbAlign, kbLift, kbScale)
+            }
+        }
+        return true
+    }
+
+    /** Re-run the metrics for a scale that changed mid-pinch, without going through the prefs. */
+    private fun applyScaleNow() {
+        val saved = kbScale
+        Prefs.setKbGeometry(context, kbWidth, kbAlign, kbLift, saved)
+        applyPrefs()
+        rebuild()
+    }
+
     /** True while the twelve-key pad is showing. Several letter-level features are meaningless then. */
     private val keypadMode: Boolean get() = keyLayout == Prefs.LAYOUT_T9
 
@@ -3080,7 +3222,7 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.TOOL_EMOJI -> openEmoji()
             Key.TOOL_GIFS -> openGifs()
             Key.TOOL_HIDE -> listener?.onDismiss()
-            Key.TOOL_HAND -> setOneHanded(if (narrowed) Prefs.HAND_OFF else defaultHand())
+            Key.TOOL_HAND -> startAdjusting()
             Key.HAND_RESET -> setOneHanded(Prefs.HAND_OFF)
             Key.CLIP_BACK, Key.TOOL_BACK -> { layer = Layer.LETTERS; rebuild() }
             Key.CLIP_PREV -> { if (clipPage > 0) { clipPage--; rebuild() } }

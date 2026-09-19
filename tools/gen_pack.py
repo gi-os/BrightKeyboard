@@ -41,7 +41,10 @@ import zipfile
 
 MAGIC = 0x314C4B44  # 'LKD1'
 MAX_WORDS = 70_000
-TOP_N = 120_000          # how deep into the frequency list to look before spell-checking
+# How deep into the frequency list to look before spell-checking. Overridable because spylls is a
+# pure-Python hunspell and some affix tables are slow: Icelandic runs at 2.5 ms a word, so the full
+# depth would take five minutes. Its list is shallower than that anyway.
+TOP_N = int(os.environ.get("PACK_TOP_N", "120000"))
 HUNSPELL = os.environ.get("HUNSPELL_DIR", "/tmp/deb/ex/usr/share/hunspell")
 
 # code -> (wordfreq language, hunspell base name, display name, base layout)
@@ -52,6 +55,9 @@ LANGS = {
     "pt": ("pt", "pt_PT", "Português", "qwerty"),
     "it": ("it", "it_IT", "Italiano", "qwerty"),
     "no": ("nb", "nb_NO", "Norsk", "qwerty"),
+    # Neither of these is published as an AOSP word list, so a built pack is the only way to get them.
+    "id": ("id", "id_ID", "Bahasa Indonesia", "qwerty"),
+    "is": ("is", "is_IS", "Íslenska", "qwerty"),
 }
 
 # Letters Unicode will not decompose, because they are not a base letter wearing a mark.
@@ -144,6 +150,59 @@ def build_from_combined(code, name, layout, combined, out_path):
     write_pack(code, name, layout, ranked, out_path)
 
 
+def spellcheck_slice(code, start, end, cache_path):
+    """
+    Spell-check one slice of the frequency list and append what passes to [cache_path].
+
+    Exists because spylls is a pure-Python hunspell and some affix tables are slow enough that a full
+    pass does not fit in one sitting: Icelandic runs at about 2.5 ms a word. Resumable, so the work
+    can be done in chunks and the pack built from the cache afterwards.
+    """
+    import wordfreq
+    from spylls.hunspell import Dictionary
+    lang, dic, _, _ = LANGS[code]
+    spell = Dictionary.from_files(os.path.join(HUNSPELL, dic))
+    words = wordfreq.top_n_list(lang, end)[start:end]
+    kept = 0
+    with open(cache_path, "a", encoding="utf-8") as f:
+        for word in words:
+            if any(ch.isdigit() for ch in word):
+                continue
+            display = word
+            if not spell.lookup(word):
+                cap = word.capitalize()
+                if not spell.lookup(cap):
+                    continue
+                display = cap
+            w = wordfreq.word_frequency(word, lang)
+            if w <= 0:
+                continue
+            f.write(f"{display}\t{w!r}\n")
+            kept += 1
+    print(f"{code}: slice {start}-{end} kept {kept:,} -> {cache_path}")
+
+
+def build_from_cache(code, cache_path, out_path):
+    lang, dic, name, layout = LANGS[code]
+    ranked = {}
+    with open(cache_path, encoding="utf-8") as f:
+        for line in f:
+            display, _, w = line.rstrip("\n").partition("\t")
+            try:
+                weight = float(w)
+            except ValueError:
+                continue
+            key = fold(display)
+            if not key or len(key) > 24:
+                continue
+            prev = ranked.get(key)
+            if prev is None or weight > prev[0]:
+                ranked[key] = (weight, display)
+    if not ranked:
+        sys.exit(f"{code}: cache {cache_path} held nothing usable")
+    write_pack(code, name, layout, ranked, out_path)
+
+
 def build(code, out_path):
     import wordfreq
     from spylls.hunspell import Dictionary
@@ -224,7 +283,14 @@ if __name__ == "__main__":
     #
     #   gen_pack.py es                                   es.pack
     #   gen_pack.py --combined ca Català qwerty main_ca.combined ca.pack
-    if len(sys.argv) > 1 and sys.argv[1] == "--combined":
+    if len(sys.argv) > 1 and sys.argv[1] == "--slice":
+        # gen_pack.py --slice <code> <start> <end> <cache>
+        spellcheck_slice(sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5])
+    elif len(sys.argv) > 1 and sys.argv[1] == "--from-cache":
+        # gen_pack.py --from-cache <code> <cache> [out.pack]
+        build_from_cache(sys.argv[2], sys.argv[3],
+                         sys.argv[4] if len(sys.argv) > 4 else f"{sys.argv[2]}.pack")
+    elif len(sys.argv) > 1 and sys.argv[1] == "--combined":
         if len(sys.argv) < 6:
             sys.exit("usage: gen_pack.py --combined <code> <name> <layout> <in.combined> [out.pack]")
         _, _, code, name, layout, combined = sys.argv[:6]

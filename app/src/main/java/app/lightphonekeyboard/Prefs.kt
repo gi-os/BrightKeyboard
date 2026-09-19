@@ -22,6 +22,10 @@ object Prefs {
     private const val KEY_TOUCH_MAP = "touch_map_"
     private const val KEY_TOUCH_OVERLAY = "touch_overlay"
     private const val KEY_LANGUAGE = "language"
+    private const val KEY_KB_WIDTH = "kb_width"
+    private const val KEY_KB_ALIGN = "kb_align"
+    private const val KEY_KB_LIFT = "kb_lift"
+    private const val KEY_KB_SCALE = "kb_scale"
     private const val KEY_BLANK_LETTERS = "blank_letters"
     private const val KEY_TOOLS_KEY = "tools_key"
     private const val KEY_LAYOUT = "key_layout"
@@ -342,6 +346,39 @@ object Prefs {
 
     fun setLanguages(c: Context, codes: Set<String>) =
         prefs(c).edit().putString(KEY_LANGUAGE, codes.joinToString(",").ifEmpty { "en" }).apply()
+
+    // Where the keyboard sits and how big it is, when the typist has moved it themselves. Fractions
+    // rather than pixels, so none of it has to be redone on a different screen — and so the bounds
+    // below mean the same thing everywhere. Defaults are the full-width keyboard this has always been.
+
+    /** Fraction of the screen the keys span. */
+    fun kbWidth(c: Context): Float = prefs(c).getFloat(KEY_KB_WIDTH, 1f).coerceIn(KB_WIDTH_MIN, 1f)
+
+    /** Where the narrowed keyboard sits across the screen: 0 hard left, 1 hard right. */
+    fun kbAlign(c: Context): Float = prefs(c).getFloat(KEY_KB_ALIGN, 0.5f).coerceIn(0f, 1f)
+
+    /** How far it floats off the bottom edge, as a fraction of its own height. */
+    fun kbLift(c: Context): Float = prefs(c).getFloat(KEY_KB_LIFT, 0f).coerceIn(0f, KB_LIFT_MAX)
+
+    /** Key height multiplier on top of the chosen height preset. */
+    fun kbScale(c: Context): Float = prefs(c).getFloat(KEY_KB_SCALE, 1f).coerceIn(KB_SCALE_MIN, KB_SCALE_MAX)
+
+    fun setKbGeometry(c: Context, width: Float, align: Float, lift: Float, scale: Float) =
+        prefs(c).edit()
+            .putFloat(KEY_KB_WIDTH, width.coerceIn(KB_WIDTH_MIN, 1f))
+            .putFloat(KEY_KB_ALIGN, align.coerceIn(0f, 1f))
+            .putFloat(KEY_KB_LIFT, lift.coerceIn(0f, KB_LIFT_MAX))
+            .putFloat(KEY_KB_SCALE, scale.coerceIn(KB_SCALE_MIN, KB_SCALE_MAX))
+            .apply()
+
+    fun resetKbGeometry(c: Context) = prefs(c).edit()
+        .remove(KEY_KB_WIDTH).remove(KEY_KB_ALIGN).remove(KEY_KB_LIFT).remove(KEY_KB_SCALE).apply()
+
+    /** Narrower than this and the keys are too small to hit; taller and it eats the field. */
+    const val KB_WIDTH_MIN = 0.55f
+    const val KB_LIFT_MAX = 0.60f
+    const val KB_SCALE_MIN = 0.75f
+    const val KB_SCALE_MAX = 1.35f
 
     /** Take the letters off the keys and leave a bump under F and J. Off by default, obviously. */
     fun blankLetters(c: Context): Boolean = prefs(c).getBoolean(KEY_BLANK_LETTERS, false)
