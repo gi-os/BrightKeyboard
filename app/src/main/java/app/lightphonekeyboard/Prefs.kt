@@ -5,7 +5,9 @@ import app.lightphonekeyboard.text.Alternatives
 
 /** Tiny SharedPreferences wrapper. Single-process app, so the Activity's writes are seen by the IME. */
 object Prefs {
-    private const val FILE = "light_keyboard_prefs"
+    // internal, not private: Migration reads and rewrites this file wholesale when the app moves
+    // to its own applicationId, and it has to name the same file this wrapper writes.
+    internal const val FILE = "light_keyboard_prefs"
     private const val KEY_AUTOCORRECT = "autocorrect"
     private const val KEY_SWIPE = "swipe_typing"
     private const val KEY_SUGGESTIONS = "suggestions"

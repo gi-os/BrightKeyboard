@@ -58,6 +58,10 @@ class SetupActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Before anything on this screen reads a setting. In the build that took the new
+        // applicationId this is where the old app's settings, saved words and touch model arrive;
+        // in the old build it returns immediately. See Migration.
+        Migration.importOnceFromLegacy(this)
         val pad = (24 * resources.displayMetrics.density).toInt()
         val side = (34 * resources.displayMetrics.density).toInt()   // LightOS horizontal content inset (~88px)
         val root = LinearLayout(this).apply {
