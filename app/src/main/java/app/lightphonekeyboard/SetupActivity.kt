@@ -506,7 +506,7 @@ class SetupActivity : AppCompatActivity() {
             else R.string.delete_cycle,
         )
         correctionValue?.text = "$strength · $delete"
-        languageValue?.text = LangPack.nameOf(Prefs.language(this))
+        languageValue?.text = Prefs.languages(this).joinToString(" · ") { LangPack.nameOf(it) }
     }
 
     /** Update the current side shown on the one-handed row. */

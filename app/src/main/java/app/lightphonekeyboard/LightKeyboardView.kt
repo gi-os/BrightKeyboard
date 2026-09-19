@@ -3053,11 +3053,12 @@ class LightKeyboardView @JvmOverloads constructor(
     private fun loadCharModel(): CharModel? = try {
         // A pack brings its own: the letter that follows "th" in English is not the one that follows
         // it in Norwegian, and this table is what breaks a tie between two keys under one thumb.
-        val bytes = LangPack.load(context, Prefs.language(context))?.charModel
-            ?: resources.openRawResource(R.raw.charmodel).use { it.readBytes() }
-        val fb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
-        val arr = FloatArray(fb.remaining())
-        fb.get(arr)
+        val built = LangPack.active(context).charModel
+        val arr = built ?: run {
+            val bytes = resources.openRawResource(R.raw.charmodel).use { it.readBytes() }
+            val fb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+            FloatArray(fb.remaining()).also { fb.get(it) }
+        }
         CharModel(arr)
     } catch (e: Exception) {
         null   // fall back to pure nearest-key (spatial only) if the asset is missing/corrupt

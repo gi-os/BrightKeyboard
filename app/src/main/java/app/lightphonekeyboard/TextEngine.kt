@@ -125,9 +125,9 @@ class TextEngine(private val context: Context) {
             // A language pack replaces the bundled list rather than joining it. Two languages at
             // once would mean two frequency scales in one ranking, and a word common in one of them
             // outranking the word you meant in the other.
-            val pack = LangPack.load(context, Prefs.language(context))
+            val pack = LangPack.active(context)
             val loaded = try {
-                pack?.dictionary
+                pack.dictionary
                     ?: context.resources.openRawResource(R.raw.words).use { Dictionary.load(it) }
             } catch (e: Exception) {
                 // Missing or corrupt asset. Autocorrect falls back to the system spell checker and
@@ -142,7 +142,7 @@ class TextEngine(private val context: Context) {
                 val sp = WordSplitter(loaded)
                 pendingGrid?.let { c.grid = it; d.grid = it; sp.grid = it }
                 val words = UserWords.deserialize(
-                    Prefs.userWords(context), CustomWords.load(context), pack?.display.orEmpty(),
+                    Prefs.userWords(context), CustomWords.load(context), pack.display,
                 )
                 c.userWords = words
                 d.userWords = words

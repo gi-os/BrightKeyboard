@@ -326,11 +326,22 @@ object Prefs {
     fun setToolsKey(c: Context, value: String) =
         prefs(c).edit().putString(KEY_TOOLS_KEY, value).apply()
 
-    /** The dictionary language in use: "en", or a pack code. English needs no pack and is the default. */
-    fun language(c: Context): String = prefs(c).getString(KEY_LANGUAGE, "en") ?: "en"
+    /**
+     * The dictionaries in use, as codes. "en" is the built-in one and the default.
+     *
+     * A set, because more than one can be on at once. That is an honest trade rather than a free win:
+     * each list's frequencies describe how common a word is within its own language, so two at once
+     * asserts that either could be the one being typed. Anyone switching on a second language is
+     * making exactly that claim about themselves.
+     */
+    fun languages(c: Context): Set<String> {
+        val raw = prefs(c).getString(KEY_LANGUAGE, null) ?: return setOf("en")
+        val set = raw.split(",").filter { it.isNotBlank() }.toSet()
+        return set.ifEmpty { setOf("en") }
+    }
 
-    fun setLanguage(c: Context, code: String) =
-        prefs(c).edit().putString(KEY_LANGUAGE, code).apply()
+    fun setLanguages(c: Context, codes: Set<String>) =
+        prefs(c).edit().putString(KEY_LANGUAGE, codes.joinToString(",").ifEmpty { "en" }).apply()
 
     /** Take the letters off the keys and leave a bump under F and J. Off by default, obviously. */
     fun blankLetters(c: Context): Boolean = prefs(c).getBoolean(KEY_BLANK_LETTERS, false)

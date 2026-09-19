@@ -47,6 +47,9 @@ class Dictionary private constructor(
 
     fun word(i: Int): String = String(chars, starts[i], length(i))
 
+    /** ln(p) for word [i]. Stored in milli-nats to fit a short; handed back in nats, as taken in. */
+    fun logfOf(i: Int): Float = logf[i] / 1000f
+
     /** Indices of all words whose length is in [min]..[max]. Empty when the band is out of range. */
     fun lengthRange(min: Int, max: Int): IntRange {
         val lo = min.coerceAtLeast(1)
