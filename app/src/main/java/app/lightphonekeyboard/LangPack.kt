@@ -46,6 +46,9 @@ object LangPack {
         Lang("pt", "Português"),
         Lang("it", "Italiano"),
         Lang("no", "Norsk"),
+        // Neither is published as an AOSP word list, so a built pack is the only way to get them.
+        Lang("id", "Bahasa Indonesia"),
+        Lang("is", "Íslenska"),
     )
 
     class Lang(val code: String, val name: String)

@@ -344,6 +344,24 @@ Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
 
+- **v3.10.x** (2026-09-19) — **Move the keyboard, resize it, and two languages nobody else has.**
+
+  **Tools → Size and place.** Drag the keyboard where you want it. Pinch to resize it. It can sit
+  narrower, taller, shorter, off to one side, or lifted clear of the bottom edge, and it stays where
+  you put it. One-handed mode was the same idea with two presets, and still works. This is the
+  version without presets.
+
+  Everything is stored as a fraction of the screen, not in pixels. It survives a rotation and means
+  the same thing on a different phone. A pinch reads its two axes separately, because people pinch
+  diagonally and mean one of the two.
+
+  **Indonesian and Icelandic.** The AOSP repository publishes no word list for either. These packs
+  are the only way to get them.
+
+  Both are smaller than the rest: 16,639 words and 10,706, against 64,000 to 70,000. That is what the
+  available spelling dictionaries accept. A shorter checked list beats a longer one carrying
+  misspellings, because a typo in the dictionary can never be fixed.
+
 - **v3.9.x** (2026-09-19) — **Search for a language, and run several at once.**
 
   **Settings → Language** now searches the dictionaries published at
