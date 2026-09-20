@@ -346,6 +346,24 @@ Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
 
+- **v3.11.x** (2026-09-20) — **Installing a language now does something.**
+
+  It did not. Two people reported it on the same day, one in Hindi and one in French: the language
+  downloads, the tick appears, and autocorrect carries on correcting to English.
+
+  The dictionary was loaded once when the keyboard's process started and never again. Installing a
+  language wrote the files and changed the setting, and nothing told the running keyboard to look. It
+  went on holding English until Android happened to kill the process. The character model had the same
+  fault for the same reason. Both are now keyed on the set of chosen languages, rebuilt when that set
+  changes, and the keyboard checks when it opens on a new field.
+
+  Anything cached for the life of a process needs a stated reason to be dropped. Neither of these had
+  one.
+
+  Also fixed: **Indonesian and Icelandic could not be found.** The language search lists what the AOSP
+  repository publishes, and those two exist precisely because it publishes no word list for them, so
+  the one screen that should have offered them was the one screen that could not.
+
 - **v3.10.x** (2026-09-19) — **Move the keyboard, resize it, and two languages nobody else has.**
 
   **Tools → Size and place.** Drag the keyboard where you want it. Pinch to resize it. It can sit

@@ -2900,7 +2900,21 @@ class LightKeyboardView @JvmOverloads constructor(
         companion object { const val SYMS = 27; const val BOUNDARY = 26 }
     }
 
-    private val charModel: CharModel? by lazy { loadCharModel() }
+    // Not `by lazy`: a lazy is loaded once for the life of the view, and this table belongs to
+    // whichever languages are switched on. Keyed on the same string the engine keys its dictionary
+    // on, so the two can never disagree about which language is being typed.
+    private var charModelCache: CharModel? = null
+    private var charModelFor: String? = null
+
+    private val charModel: CharModel?
+        get() {
+            val key = LangPack.key(context)
+            if (charModelFor != key) {
+                charModelFor = key
+                charModelCache = loadCharModel()
+            }
+            return charModelCache
+        }
 
     // The tap-accuracy tunables and the touch model itself are declared ABOVE init{}, with the rest
     // of the geometry — init calls rebuild(), which reaches rebasePrior() through publishKeyGrid().

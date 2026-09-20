@@ -135,6 +135,10 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
             val numeric = cls == InputType.TYPE_CLASS_NUMBER ||
                 cls == InputType.TYPE_CLASS_PHONE ||
                 cls == InputType.TYPE_CLASS_DATETIME
+            // The languages may have changed on the settings screen since this keyboard last
+            // opened. prepare() is cheap when they have not and rebuilds the dictionary when they
+            // have; without it a newly installed language does nothing until the process dies.
+            engine.prepare()
             keyboard?.reset(numeric)
         }
         micActive = false

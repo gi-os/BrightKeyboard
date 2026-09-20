@@ -72,7 +72,34 @@ object LangPack {
      *
      * Blocking, and called from the engine's own background thread.
      */
+    /**
+     * The set of languages the tables were last built for. Both callers need the same answer and
+     * building it parses every installed word list, so it is built once per change and not once per
+     * caller. It is also what tells the engine its dictionary has gone stale.
+     */
+    fun key(c: Context): String = Prefs.languages(c).sorted().joinToString(",")
+
+    private var cacheKey: String? = null
+    private var cached: Active? = null
+
+    /** Forget the built tables. The next [active] rebuilds them. */
+    @Synchronized
+    fun invalidate() {
+        cacheKey = null
+        cached = null
+    }
+
+    @Synchronized
     fun active(c: Context): Active {
+        val k = key(c)
+        cached?.let { if (cacheKey == k) return it }
+        val built = build(c)
+        cacheKey = k
+        cached = built
+        return built
+    }
+
+    private fun build(c: Context): Active {
         val codes = Prefs.languages(c).filter { it != ENGLISH && isInstalled(c, it) }
         if (codes.isEmpty()) return Active(null, null, emptyMap())
         val lists = codes.map { entriesOf(c, it) }.filter { it.isNotEmpty() }

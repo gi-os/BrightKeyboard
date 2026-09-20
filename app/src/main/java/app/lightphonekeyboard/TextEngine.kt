@@ -116,10 +116,24 @@ class TextEngine(private val context: Context) {
 
     val ready: Boolean get() = dictionary != null
 
-    /** Kick off the one-time load. Safe to call repeatedly; only the first call does work. */
+    /** The languages the current dictionary was built for, so a change to them can be noticed. */
+    private var loadedLanguages: String? = null
+
+    /**
+     * Load the dictionary, or reload it because the languages changed.
+     *
+     * Safe to call repeatedly and cheap when nothing has moved. It used to be a strict one-time load,
+     * which meant installing a language did nothing at all until the keyboard's process happened to
+     * die: the engine went on holding English, so autocorrect went on correcting to English. Two
+     * people reported that before it was spotted. Anything cached per process needs a reason to be
+     * dropped, and here the reason is the set of chosen languages changing.
+     */
     @Synchronized
     fun prepare() {
-        if (dictionary != null || loading) return
+        val languages = LangPack.key(context)
+        if (loading) return
+        if (dictionary != null && loadedLanguages == languages) return
+        loadedLanguages = languages
         loading = true
         Thread({
             // A language pack replaces the bundled list rather than joining it. Two languages at

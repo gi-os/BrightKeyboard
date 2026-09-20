@@ -170,6 +170,7 @@ class LanguagesActivity : AppCompatActivity() {
         if (!set.remove(code)) set.add(code)
         if (set.isEmpty()) set.add(LangPack.ENGLISH)
         Prefs.setLanguages(this, set)
+        LangPack.invalidate()
         refreshInstalled()
     }
 
@@ -179,6 +180,7 @@ class LanguagesActivity : AppCompatActivity() {
         val set = Prefs.languages(this).toMutableSet()
         set.remove(code)
         Prefs.setLanguages(this, if (set.isEmpty()) setOf(LangPack.ENGLISH) else set)
+        LangPack.invalidate()
         refreshInstalled()
         showResults()
     }
@@ -192,17 +194,32 @@ class LanguagesActivity : AppCompatActivity() {
             main.post {
                 catalogue = items
                 status.text = if (items.isEmpty()) getString(R.string.lang_offline)
-                else getString(R.string.lang_found, items.size)
+                else getString(R.string.lang_found, offered().size)
                 showResults()
             }
         }, "aosp-list").start()
+    }
+
+    /**
+     * Everything installable: the repository's catalogue, plus the packs built for this keyboard.
+     *
+     * The built ones have to be added by hand. Two of them, Indonesian and Icelandic, exist precisely
+     * because the repository has no word list for them — so a screen that only listed the repository
+     * offered no way to reach the two languages it is the only source of.
+     */
+    private fun offered(): List<AospRepo.Item> {
+        val fromRepo = catalogue.associateBy { it.code }
+        val built = LangPack.AVAILABLE
+            .filter { it.code !in fromRepo }
+            .map { AospRepo.Item(it.code, it.name, "", 0L) }
+        return (catalogue + built).sortedBy { it.name.lowercase() }
     }
 
     /** Only the first handful: a list of eighty rows on a 3.9 inch screen is not a list, it is a wall. */
     private fun showResults() {
         results.removeAllViews()
         val q = search.text.toString().trim().lowercase()
-        val matches = catalogue
+        val matches = offered()
             .filter { !LangPack.isInstalled(this, it.code) }
             .filter { q.isEmpty() || it.name.lowercase().contains(q) || it.code.startsWith(q) }
             .take(if (q.isEmpty()) 6 else 12)
@@ -216,7 +233,8 @@ class LanguagesActivity : AppCompatActivity() {
             textSize = 20f
         }
         val sub = TextView(this).apply {
-            text = getString(R.string.lang_size, item.bytes / 1_000_000f)
+            text = if (item.bytes > 0) getString(R.string.lang_size, item.bytes / 1_000_000f)
+            else getString(R.string.lang_built)
             setTextColor(getColor(R.color.gray))
             textSize = 13f
         }
@@ -254,6 +272,7 @@ class LanguagesActivity : AppCompatActivity() {
                     val set = Prefs.languages(this).toMutableSet()
                     set.add(item.code)
                     Prefs.setLanguages(this, set)
+                    LangPack.invalidate()
                     search.setText("")
                     refreshInstalled()
                     showResults()

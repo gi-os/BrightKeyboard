@@ -78,8 +78,9 @@ jobs:
           #       and the provider that hands settings, saved words and the touch model to 4.0.
           # 4.0: the applicationId is com.gios.brightkeyboard. Same keyboard, new install identity,
           #      and it reads 3.11's settings, saved words and touch model across on first launch.
+          # 4.1: a language change actually reloads the dictionary and character model.
           # CI reads only major.minor from here, so this line is where a feature release is declared.
-          echo "name=4.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "name=4.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       # The typing logic (dictionary, autocorrect, swipe decoding) is pure Kotlin with no Android
