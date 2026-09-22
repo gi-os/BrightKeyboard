@@ -142,6 +142,20 @@ class LightKeyboardView @JvmOverloads constructor(
         /** The search key on the GIF page: the letters come back and the strip shows the query. */
         fun onGifSearch()
 
+        /**
+         * A text face was tapped.
+         *
+         * Not [onText], which is the single-character path that feeds the corrector and tracks the
+         * word being composed — a face is a dozen characters of punctuation and running it through
+         * that would leave the keyboard believing `¯\_(ツ)_/¯` was a word somebody typed. Not
+         * [onPaste] either: that one hands the letters back afterwards, which is right for a clip
+         * and wrong here, because faces come in twos and threes.
+         */
+        fun onKaomoji(text: String)
+
+        /** The search key on the kaomoji page. Borrows the letters like the other two. */
+        fun onKaomojiSearch()
+
         /** Listening surface tapped — cancel dictation. */
         fun onMicCancel()
 
@@ -216,6 +230,7 @@ class LightKeyboardView @JvmOverloads constructor(
         const val TOOL_CLIPS = "__TOOL_CLIPS__"
         const val TOOL_EMOJI = "__TOOL_EMOJI__"
         const val TOOL_GIFS = "__TOOL_GIFS__"
+        const val TOOL_KAOMOJI = "__TOOL_KAOMOJI__"
         const val TOOL_HAND = "__TOOL_HAND__"
         const val TOOL_HIDE = "__TOOL_HIDE__"
 
@@ -260,6 +275,30 @@ class LightKeyboardView @JvmOverloads constructor(
             id.substring(prefix.length, id.length - 2).toIntOrNull() ?: -1
         fun clipCellIndex(id: String) = if (isClipCell(id)) suffixIndex(id, CLIP_CELL_PREFIX) else -1
         fun clipPinIndex(id: String) = if (isClipPin(id)) suffixIndex(id, CLIP_PIN_PREFIX) else -1
+
+        // The kaomoji page: six faces to a page, a pager below, and a search that borrows the
+        // letters. Paged rather than scrolled, for the reason the clipboard is — see [layoutClips].
+        const val KAO_BACK = "__KAO_BACK__"
+        const val KAO_PREV = "__KAO_PREV__"
+        const val KAO_NEXT = "__KAO_NEXT__"
+        const val KAO_SEARCH = "__KAO_SEARCH__"
+
+        /**
+         * The middle of the control row: which category you are in and how far through it you are,
+         * and a button that jumps to the next category.
+         *
+         * One cell doing both jobs because the row has no space for nine category buttons the way
+         * the emoji row has. It can afford them because a category icon is one emoji wide; a
+         * kaomoji category has no icon at all, only a name, and nine names do not fit a keyboard.
+         */
+        const val KAO_WHERE = "__KAO_WHERE__"
+
+        /** A cell with no face on it. Tiles the hit rects, as [CLIP_BLANK] does — same trap. */
+        const val KAO_BLANK = "__KAO_BLANK__"
+        const val KAO_CELL_PREFIX = "__KAO_AT_"
+        fun kaoCell(i: Int) = "$KAO_CELL_PREFIX${i}__"
+        fun isKaoCell(id: String) = id.startsWith(KAO_CELL_PREFIX)
+        fun kaoCellIndex(id: String) = if (isKaoCell(id)) suffixIndex(id, KAO_CELL_PREFIX) else -1
 
         /**
          * Switch to another keyboard. Only ever laid out when the phone has more than one enabled —
@@ -337,22 +376,26 @@ class LightKeyboardView @JvmOverloads constructor(
         /**
          * The tools page, reached from the bottom row's [Key.TOOLS].
          *
-         * Five tiles over the usual bottom row. Emoji is first among equals — it is what most
+         * Six tiles over the usual bottom row. Emoji is first among equals — it is what most
          * people come here for — and is a tile rather than a key in the row below because a tile is
          * a target you can hit without looking, and because the row below already has seven things
          * in it.
          */
         // A page of tiles, and a way back. The bottom row used to be the keyboard's own — space,
         // return, ABC and the rest — which made a modal page look like somewhere you could type.
+        //
+        // Faces sit beside Emoji rather than under Size and Hide: the two are the same errand, and
+        // somebody who opened this page to put a face in a message should not have to read past the
+        // keyboard's own settings to find the other half of it.
         val tools = listOf(
             listOf(Key.TOOL_CLIPS, Key.TOOL_EMOJI),
-            listOf(Key.TOOL_GIFS, Key.TOOL_HAND),
-            listOf(Key.TOOL_HIDE),
+            listOf(Key.TOOL_KAOMOJI, Key.TOOL_GIFS),
+            listOf(Key.TOOL_HAND, Key.TOOL_HIDE),
             listOf(Key.TOOL_BACK),
         )
     }
 
-    private enum class Layer { LETTERS, SYMBOLS, MORE, EMOJI, TOOLS, CLIPS, GIFS }
+    private enum class Layer { LETTERS, SYMBOLS, MORE, EMOJI, KAOMOJI, TOOLS, CLIPS, GIFS }
 
     private var layer = Layer.LETTERS
     private var shifted = true
@@ -570,6 +613,18 @@ class LightKeyboardView @JvmOverloads constructor(
         }
     }
 
+    /** The text faces, the font filter, the recents and the current query. See [KaomojiPanel]. */
+    val kaomojiPanel = KaomojiPanel(context).apply {
+        onReady = {
+            // Off the filter thread, so hop to the UI thread — the same repaint the emoji panel
+            // needs, and for the same reason: an empty page has no keys to receive a touch.
+            post { if (layer == Layer.KAOMOJI) rebuild() }
+        }
+    }
+
+    /** Which page of six the kaomoji page is showing. */
+    private var kaoPage = 0
+
     /** How far the grid is scrolled, in pixels. Always >= 0 and clamped to the content height. */
     private var emojiScroll = 0f
 
@@ -768,7 +823,7 @@ class LightKeyboardView @JvmOverloads constructor(
                 Layer.SYMBOLS -> Layout.symbols
                 Layer.MORE -> Layout.more
                 Layer.TOOLS -> Layout.tools
-                Layer.EMOJI, Layer.CLIPS, Layer.GIFS -> emptyList()
+                Layer.EMOJI, Layer.KAOMOJI, Layer.CLIPS, Layer.GIFS -> emptyList()
             }
             // Drop any control keys turned off in settings (mic / tools / return); the row reflows.
             //
@@ -799,6 +854,7 @@ class LightKeyboardView @JvmOverloads constructor(
         val rowCount = when {
             listening -> Layout.letters.size           // keep height constant while listening
             layer == Layer.EMOJI -> emojiRowCount + 1
+            layer == Layer.KAOMOJI -> KAO_ROWS + 1
             layer == Layer.CLIPS -> CLIP_ROWS + 1
             layer == Layer.GIFS -> GIF_ROWS + 1
             else -> currentRows.size
@@ -845,6 +901,7 @@ class LightKeyboardView @JvmOverloads constructor(
         if (width == 0 || height == 0 || listening) return
         if (narrowed) layoutHandReset()
         if (layer == Layer.EMOJI) { layoutEmoji(); return }
+        if (layer == Layer.KAOMOJI) { layoutKaomoji(); return }
         if (layer == Layer.CLIPS) { layoutClips(); return }
         if (layer == Layer.GIFS) { layoutGifs(); return }
 
@@ -1048,6 +1105,83 @@ class LightKeyboardView @JvmOverloads constructor(
                 RectF(left + visInset, stripTop + padTop + keyGap, right - visInset, height - padBottom),
             ),
         )
+    }
+
+    /**
+     * The kaomoji page: [KAO_ROWS] rows of [KAO_COLS] faces over one row of controls.
+     *
+     * Two columns rather than the emoji grid's eight. A face is a phrase, not a character — `^_^`
+     * and `(╯°□°)╯︵ ┻━┻` are five times apart in width — so a cell has to be wide enough for the
+     * long ones and the text is then shrunk to fit whatever lands in it (see [drawKaomoji]). At
+     * three columns the table flip is unreadable; at one, a page holds three faces.
+     *
+     * Paged rather than scrolled, like the clipboard: a scroll here would be a third gesture
+     * reading the same finger as swipe typing and swipe-to-dismiss. The page keeps the keyboard's
+     * own height, so opening it does not move the app behind it.
+     */
+    private fun layoutKaomoji() {
+        val w = contentLeft + contentW
+        val drawW = contentW - padSide * 2
+        val top = stripTop
+        val gridBottom = top + padTop + KAO_ROWS * rowPitch
+        val cells = kaomojiPanel.view.size
+        kaoPage = kaoPage.coerceIn(0, kaoPages() - 1)
+        val first = kaoPage * KAO_ROWS * KAO_COLS
+
+        for (r in 0 until KAO_ROWS) {
+            // Bands tile [top, gridBottom]: the first absorbs the top padding and the last reaches
+            // the controls, so there is no uncovered strip for [findKey] to answer with a face.
+            val bandTop = if (r == 0) top else top + padTop + r * rowPitch
+            val bandBottom = if (r == KAO_ROWS - 1) gridBottom else top + padTop + (r + 1) * rowPitch
+            val visTop = top + padTop + r * rowPitch + keyGap
+            val visBottom = visTop + rowKeyH
+            for (c in 0 until KAO_COLS) {
+                val cell = first + r * KAO_COLS + c
+                val cellLeft = contentLeft + padSide + drawW * (c.toFloat() / KAO_COLS)
+                val cellRight = contentLeft + padSide + drawW * ((c + 1).toFloat() / KAO_COLS)
+                val hitLeft = if (c == 0) contentLeft else cellLeft
+                val hitRight = if (c == KAO_COLS - 1) w else cellRight
+                placed.add(
+                    PlacedKey(
+                        if (cell < cells) Key.kaoCell(cell) else Key.KAO_BLANK,
+                        RectF(hitLeft, bandTop, hitRight, bandBottom),
+                        RectF(cellLeft + keyGap, visTop, cellRight - keyGap, visBottom),
+                    ),
+                )
+            }
+        }
+        layoutKaomojiControls(w, drawW, gridBottom)
+    }
+
+    /**
+     * The control row: back, the pager, where you are, and search.
+     *
+     * Back and search take the extra width because they have to be hittable without looking. The
+     * middle cell is the widest of the rest because it is the only thing on the page that says
+     * which category you are in — see [Key.KAO_WHERE].
+     */
+    private fun layoutKaomojiControls(w: Float, drawW: Float, gridBottom: Float) {
+        val h = height.toFloat()
+        val visTop = gridBottom + keyGap
+        val visBottom = visTop + rowKeyH
+        val ids = listOf(Key.KAO_BACK, Key.KAO_PREV, Key.KAO_WHERE, Key.KAO_NEXT, Key.KAO_SEARCH)
+        val weights = listOf(1.5f, 1f, 3f, 1f, 1.5f)
+        val total = weights.sum()
+        var x = contentLeft + padSide
+        for (k in ids.indices) {
+            val cw = drawW * (weights[k] / total)
+            val hitLeft = if (k == 0) contentLeft else x
+            val hitRight = if (k == ids.size - 1) w else x + cw
+            placed.add(
+                PlacedKey(ids[k], RectF(hitLeft, gridBottom, hitRight, h), RectF(x, visTop, x + cw, visBottom)),
+            )
+            x += cw
+        }
+    }
+
+    private fun kaoPages(): Int {
+        val perPage = KAO_ROWS * KAO_COLS
+        return ((kaomojiPanel.view.size + perPage - 1) / perPage).coerceAtLeast(1)
     }
 
     /**
@@ -1320,6 +1454,68 @@ class LightKeyboardView @JvmOverloads constructor(
 
     private fun clipPages(): Int = ((clips.size + CLIP_ROWS - 1) / CLIP_ROWS).coerceAtLeast(1)
 
+    /**
+     * Open the kaomoji page, from the first page, with fresh recents and your own faces.
+     *
+     * Re-read on every open rather than trusted from [applyPrefs], because a face added on the
+     * settings screen reaches the running keyboard only through preferences — and that screen is
+     * opened from settings, not from here, so nothing else would have noticed.
+     */
+    private fun openKaomoji() {
+        listener?.onEmojiPanelClosed()
+        kaomojiPanel.prepare()
+        kaomojiPanel.search("")
+        kaomojiPanel.reload()
+        kaoPage = 0
+        layer = Layer.KAOMOJI
+        rebuild()
+    }
+
+    private fun closeKaomoji() {
+        listener?.onEmojiPanelClosed()
+        kaomojiPanel.search("")
+        layer = Layer.LETTERS
+        rebuild()
+    }
+
+    /** Show the page with [query] run against it. The search key's other half; see [showEmojiSearch]. */
+    fun showKaomojiSearch(query: String) {
+        kaomojiPanel.reload()
+        kaomojiPanel.search(query)
+        kaoPage = 0
+        layer = Layer.KAOMOJI
+        rebuild()
+    }
+
+    /**
+     * Jump to the start of the next category, wrapping at the end.
+     *
+     * The page's only category navigation, and it is deliberately a cycle rather than a list: seven
+     * categories plus Recent plus Yours is nine names, and nine names do not fit a control row. A
+     * cycle costs at most eight taps to reach any of them and no width at all.
+     */
+    private fun nextKaomojiCategory() {
+        val v = kaomojiPanel.view
+        if (v.groups.isEmpty()) return
+        val perPage = KAO_ROWS * KAO_COLS
+        val here = kaomojiPanel.groupOfCell(kaoPage * perPage)
+        val next = if (here < 0) 0 else (here + 1) % v.groups.size
+        kaoPage = kaomojiPanel.cellOfGroup(next) / perPage
+        rebuild()
+    }
+
+    /** The face in [cell], inserted and remembered. */
+    private fun commitKaomoji(cell: Int) {
+        val text = kaomojiPanel.textAt(cell) ?: return
+        val before = kaomojiPanel.leadingCount()
+        listener?.onKaomoji(text)
+        kaomojiPanel.remember(text)
+        // A new recent adds a cell and shifts every one after it along by one; a repeat only
+        // reorders them. Laying the page out again in the first case is what keeps the cell under
+        // the finger the face that is drawn in it — the same trap as [commitEmoji].
+        if (kaomojiPanel.leadingCount() != before) { kaoPage = 0; rebuild() } else invalidate()
+    }
+
     private fun setOneHanded(value: String) {
         oneHanded = value
         Prefs.setOneHanded(context, value)
@@ -1407,7 +1603,9 @@ class LightKeyboardView @JvmOverloads constructor(
         // back to a keyboard still showing one — after hiding it, or after a settings screen it
         // opened — means coming back to no keys. The symbols layer is deliberately not reset here:
         // somebody who switched to it before the keyboard was hidden meant to be on it.
-        if (layer == Layer.TOOLS || layer == Layer.CLIPS || layer == Layer.GIFS) {
+        if (layer == Layer.TOOLS || layer == Layer.CLIPS || layer == Layer.GIFS ||
+            layer == Layer.KAOMOJI
+        ) {
             if (layer == Layer.GIFS) { gifPanel.stopAnimations(); clearGifGesture() }
             layer = Layer.LETTERS
         }
@@ -1527,7 +1725,7 @@ class LightKeyboardView @JvmOverloads constructor(
         if (listening) { drawListening(canvas); return }
         if (adjusting) { for (pk in placed) drawKey(canvas, pk); drawAdjustChrome(canvas); return }
         for (pk in placed) {
-            val down = pk.id != Key.CLIP_BLANK && (
+            val down = pk.id != Key.CLIP_BLANK && pk.id != Key.KAO_BLANK && (
                 pressed.containsValue(pk) ||
                     (pressedEmojiCell >= 0 && pk.id == Key.emojiCell(pressedEmojiCell)) ||
                     (pressedGifCell >= 0 && pk.id == Key.gifCell(pressedGifCell))
@@ -1540,6 +1738,7 @@ class LightKeyboardView @JvmOverloads constructor(
         }
         if (layer == Layer.EMOJI && variantGlyphs.isNotEmpty()) drawVariantRow(canvas)
         if (layer == Layer.EMOJI && emojiGlyphs.isEmpty()) drawEmojiEmpty(canvas)
+        if (layer == Layer.KAOMOJI && kaomojiPanel.view.size == 0) drawKaomojiEmpty(canvas)
         if (layer == Layer.CLIPS && clips.isEmpty()) drawClipsEmpty(canvas)
         if (layer == Layer.GIFS && gifs.isEmpty()) drawGifsEmpty(canvas)
         if (stripH > 0f) drawStrip(canvas)
@@ -1786,7 +1985,9 @@ class LightKeyboardView @JvmOverloads constructor(
             return
         }
         if (Key.isEmojiCat(id)) { drawEmojiCategory(canvas, pk); return }
-        if (id == Key.CLIP_BLANK) return
+        if (id == Key.CLIP_BLANK || id == Key.KAO_BLANK) return
+        if (Key.isKaoCell(id)) { drawKaomoji(canvas, pk); return }
+        if (id == Key.KAO_WHERE) { drawKaomojiWhere(canvas, pk); return }
         if (Key.isGifCell(id)) { drawGif(canvas, pk); return }
         if (Key.isClipCell(id)) { drawClip(canvas, pk); return }
         if (Key.isClipPin(id)) { drawClipPin(canvas, pk); return }
@@ -1956,6 +2157,67 @@ class LightKeyboardView @JvmOverloads constructor(
     }
 
     /**
+     * One face, as large as fits.
+     *
+     * Shrunk rather than truncated. A clip cut short with an ellipsis is still recognisably the clip
+     * you copied; a face cut short is a different face, and `(╯°□°)╯︵` says nothing about tables.
+     * So the size comes down until the whole thing fits, and only a face still too wide at the floor
+     * is ellipsised — at which point it is 40 characters of something that was never a face.
+     */
+    private fun drawKaomoji(canvas: Canvas, pk: PlacedKey) {
+        val text = kaomojiPanel.textAt(Key.kaoCellIndex(pk.id)) ?: return
+        val room = pk.vis.width() - dpf(8)
+        var size = labelTextSize
+        textPaint.textSize = size
+        while (textPaint.measureText(text) > room && size > labelTextSize * KAO_MIN_SCALE) {
+            size -= dpf(1)
+            textPaint.textSize = size
+        }
+        val baseline = pk.vis.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f
+        canvas.drawText(fitToWidth(text, room), pk.vis.centerX(), baseline, textPaint)
+    }
+
+    /**
+     * Where you are: the category and the page within the whole list, or the query while searching.
+     *
+     * A page number on its own would be no use — thirty-four pages of faces is a number nobody holds
+     * in their head — but a category name beside it says what the arrows are moving through.
+     */
+    private fun drawKaomojiWhere(canvas: Canvas, pk: PlacedKey) {
+        val v = kaomojiPanel.view
+        val label = when {
+            kaomojiPanel.query.isNotEmpty() -> kaomojiPanel.query
+            v.groups.isEmpty() -> ""
+            else -> {
+                val g = kaomojiPanel.groupOfCell(kaoPage * KAO_ROWS * KAO_COLS)
+                val name = v.groups.getOrElse(g.coerceAtLeast(0)) { "" }
+                "$name ${kaoPage + 1}/${kaoPages()}"
+            }
+        }
+        if (label.isEmpty()) return
+        textPaint.textSize = labelTextSize
+        val baseline = pk.vis.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f
+        canvas.drawText(fitToWidth(label, pk.vis.width() - dpf(6)), pk.vis.centerX(), baseline, textPaint)
+    }
+
+    /**
+     * What the kaomoji page says when it has nothing to show. Three reasons, three answers: the font
+     * filter has not finished, a search found nothing, or the font could draw none of them at all.
+     */
+    private fun drawKaomojiEmpty(canvas: Canvas) {
+        val message = when {
+            kaomojiPanel.searchedAndFoundNothing() -> context.getString(R.string.kaomoji_none)
+            !kaomojiPanel.ready -> context.getString(R.string.kaomoji_loading)
+            else -> context.getString(R.string.kaomoji_none)
+        }
+        textPaint.textSize = labelTextSize
+        drawWrappedCentered(
+            canvas, message, contentLeft + contentW / 2f,
+            stripTop + padTop + rowPitch * KAO_ROWS / 2f, contentW - dpf(48), textPaint,
+        )
+    }
+
+    /**
      * What the clipboard page says when it has nothing to show. Two reasons, opposite responses:
      * nothing has been copied yet, or the history is switched off in settings and never will be.
      */
@@ -2047,7 +2309,10 @@ class LightKeyboardView @JvmOverloads constructor(
         Key.TOOLS -> R.drawable.ic_kb_tools
         Key.HIDE -> R.drawable.ic_kb_hide
         Key.HAND_RESET -> R.drawable.ic_kb_expand
-        Key.CLIP_BACK, Key.GIF_BACK, Key.TOOL_BACK -> R.drawable.ic_kb_chevron_down
+        Key.CLIP_BACK, Key.GIF_BACK, Key.TOOL_BACK, Key.KAO_BACK -> R.drawable.ic_kb_chevron_down
+        Key.KAO_SEARCH -> R.drawable.ic_kb_search
+        Key.KAO_PREV -> R.drawable.ic_kb_chevron_left
+        Key.KAO_NEXT -> R.drawable.ic_kb_chevron_right
         Key.GIF_SEARCH -> R.drawable.ic_kb_search
         Key.GIF_STARRED -> if (showingStarred) R.drawable.ic_kb_star_on else R.drawable.ic_kb_star_off
         Key.GIF_PREV -> R.drawable.ic_kb_chevron_left
@@ -2067,7 +2332,7 @@ class LightKeyboardView @JvmOverloads constructor(
     // Icon inset inside its key. Compact keys are shorter, so the insets shrink too or the glyphs vanish.
     private fun padFor(id: String): Float = when (id) {
         Key.SHIFT -> if (compact) dpf(6) else dpf(9)
-        Key.BACKSPACE, Key.EMOJI_BACK, Key.CLIP_BACK, Key.GIF_BACK, Key.TOOL_BACK ->
+        Key.BACKSPACE, Key.EMOJI_BACK, Key.CLIP_BACK, Key.GIF_BACK, Key.TOOL_BACK, Key.KAO_BACK ->
             if (compact) dpf(7) else dpf(10)
         // The strip button is as tall as the whole keyboard; without a large inset its glyph would
         // be scaled to that height and fill the strip.
@@ -2081,6 +2346,7 @@ class LightKeyboardView @JvmOverloads constructor(
         Key.TOOL_CLIPS -> context.getString(R.string.tool_clipboard)
         Key.TOOL_EMOJI -> context.getString(R.string.tool_emoji)
         Key.TOOL_GIFS -> context.getString(R.string.tool_gifs)
+        Key.TOOL_KAOMOJI -> context.getString(R.string.tool_kaomoji)
         Key.TOOL_HIDE -> context.getString(R.string.tool_hide)
         // The tile says what tapping it will do, not what is currently true.
         Key.TOOL_HAND -> context.getString(R.string.tool_size)
@@ -2179,7 +2445,9 @@ class LightKeyboardView @JvmOverloads constructor(
                 // pages does something one-way and unretractable — opens a settings screen, hides the
                 // keyboard, pastes a clip — so a palm landing there is not a stray letter that can be
                 // deleted. The emoji layer already refuses second fingers for the same reason.
-                if (!tracing && layer != Layer.TOOLS && layer != Layer.CLIPS && layer != Layer.GIFS) {
+                if (!tracing && layer != Layer.TOOLS && layer != Layer.CLIPS && layer != Layer.GIFS &&
+                    layer != Layer.KAOMOJI
+                ) {
                     val idx = ev.actionIndex
                     pressDown(ev.getPointerId(idx), ev.getX(idx), ev.getY(idx))
                 }
@@ -3310,6 +3578,7 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.TOOL_CLIPS -> openClips()
             Key.TOOL_EMOJI -> openEmoji()
             Key.TOOL_GIFS -> openGifs()
+            Key.TOOL_KAOMOJI -> openKaomoji()
             Key.TOOL_HIDE -> listener?.onDismiss()
             Key.TOOL_HAND -> startAdjusting()
             Key.HAND_RESET -> setOneHanded(Prefs.HAND_OFF)
@@ -3324,6 +3593,12 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.GIF_PREV -> { if (gifPage > 0) { gifPage--; rebuild() } }
             Key.GIF_NEXT -> { if (gifPage < gifPages() - 1) { gifPage++; rebuild() } }
             Key.EMOJI_SEARCH -> listener?.onEmojiSearch()
+            Key.KAO_BACK -> closeKaomoji()
+            Key.KAO_SEARCH -> listener?.onKaomojiSearch()
+            Key.KAO_WHERE -> nextKaomojiCategory()
+            Key.KAO_PREV -> { if (kaoPage > 0) { kaoPage--; rebuild() } }
+            Key.KAO_NEXT -> { if (kaoPage < kaoPages() - 1) { kaoPage++; rebuild() } }
+            Key.KAO_BLANK -> { }
             // A layer key is handled here and never reaches the host, so the host has to be told
             // that the search is over — otherwise tapping 123 to type a number feeds the digits to
             // an invisible query instead of the document.
@@ -3351,6 +3626,12 @@ class LightKeyboardView @JvmOverloads constructor(
                 // A GIF cell commits on lift, not here — see [onGifTouch]. A hold on one stars it,
                 // and neither can be told from the other until the finger goes.
                 if (Key.isGifCell(id)) return false
+                // A face commits here, on touch-down, as a clip does: the page has no gesture
+                // of its own for a drag to mean anything else.
+                if (Key.isKaoCell(id)) {
+                    commitKaomoji(Key.kaoCellIndex(id))
+                    return false
+                }
                 if (Key.isClipCell(id)) {
                     clips.getOrNull(Key.clipCellIndex(id))?.let { listener?.onPaste(it.text) }
                     return false
@@ -3517,6 +3798,15 @@ class LightKeyboardView @JvmOverloads constructor(
         /** Clips on one page of the clipboard. Three, leaving the fourth band for the controls —
          *  the same four bands every other layer uses, so the keyboard never changes height. */
         const val CLIP_ROWS = 3
+
+        /** Rows of faces on the kaomoji page. Three, for the reason [CLIP_ROWS] is three. */
+        const val KAO_ROWS = 3
+
+        /** Columns of faces. Two — see [layoutKaomoji] for why not three and why not one. */
+        const val KAO_COLS = 2
+
+        /** How far a face's text may be shrunk to fit its cell before it is ellipsised instead. */
+        const val KAO_MIN_SCALE = 0.55f
 
         /** Columns of GIFs. Rows are worked out from the height — see [layoutGifs]. */
         const val GIF_COLS = 3

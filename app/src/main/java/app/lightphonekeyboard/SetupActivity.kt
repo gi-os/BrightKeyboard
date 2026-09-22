@@ -264,6 +264,22 @@ class SetupActivity : AppCompatActivity() {
             }
         }
 
+        // Your own text faces. Beside the emoji page because they are the same errand.
+        val kaomojiRow = run {
+            val title = label(getString(R.string.setup_kaomoji), 20f, R.color.white)
+                .apply { setPadding(0, 0, 0, 0) }
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, pad, 0, 0)
+                isClickable = true
+                setOnClickListener {
+                    startActivity(Intent(this@SetupActivity, KaomojiActivity::class.java))
+                }
+                addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
+
         // Swipe typing's own reach and alternatives, next to the autocorrect ones for the same reason.
         val swipeRow = run {
             val title = label(getString(R.string.setup_swipe_settings), 20f, R.color.white)
@@ -402,7 +418,7 @@ class SetupActivity : AppCompatActivity() {
             returnToggle, hideToggle, clipboardToggle,
             voiceRow, voiceStatus!!,
             languageRow, layoutRow, heightRow, handRow, correctionRow, touchRow, swipeRow,
-            emojiRow, gifRow,
+            emojiRow, kaomojiRow, gifRow,
             wordsRow, tryRow,
         ).forEach { root.addView(it) }
 

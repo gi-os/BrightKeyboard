@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v4.1.x** (tag `v4.1.<n>`). `applicationId` is `com.gios.brightkeyboard`.
+**Current release: v4.2.x** (tag `v4.2.<n>`). `applicationId` is `com.gios.brightkeyboard`.
 
 It was `app.lightphonekeyboard` up to v3.11, which is the id of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard), the project this is a fork of. Keeping it stopped him shipping his own keyboard to a phone that had this one, so it went back. v3.11 hands its settings, saved words and learned touch model to v4.0 on first launch — see [`Migration.kt`](app/src/main/java/app/lightphonekeyboard/Migration.kt).
 
@@ -120,9 +120,9 @@ Optional settings, all in the app itself:
 - **Hide-keyboard key** (off by default) — a key in the bottom row that closes the keyboard without
   leaving the field. Off by default because the back gesture already does this, and the bottom row is
   narrow. Turn it on if that is the key your thumb reaches for.
-- **The tools page** — the tools key opens a page of five tiles: **Clipboard**, **Emoji**, **GIFs**,
-  **One-handed** and **Hide keyboard**. Five things that can only be done from here, and nothing that
-  is a shortcut to somewhere else.
+- **The tools page** — the tools key opens a page of six tiles: **Clipboard**, **Emoji**, **Faces**,
+  **GIFs**, **One-handed** and **Hide keyboard**. Six things that can only be done from here, and
+  nothing that is a shortcut to somewhere else.
 - **GIFs** — a full-screen page, not a keyboard-sized slot: they move, they are shown whole rather
   than cropped square, and a **hold stars one**. The star key shows only the starred ones, which is
   the one view here that needs no network at all. Search [KLIPY](https://klipy.com) and drop one
@@ -132,8 +132,8 @@ Optional settings, all in the app itself:
   you, so it stays a picture either way. The ones you have used lately come first. This is the only part of
   the keyboard that uses the network — see **Settings → GIFs**, which says so, and where you can put
   your own KLIPY key if the shared one is busy.
-- **Searching a panel** — the emoji and GIF search keys borrow the letters, and **return runs the
-  search**. Letters, digits and spaces build the query, backspace edits it, and it shows in the strip
+- **Searching a panel** — the emoji, faces and GIF search keys borrow the letters, and **return runs
+  the search**. Letters, digits and spaces build the query, backspace edits it, and it shows in the strip
   above the keys rather than in what you are writing. Nothing is searched until you ask.
 - **Clipboard history** (on by default) — the last two dozen things you copied, newest first, three to
   a page. Tap one to paste it. Tap the pin beside it to keep it; pinned clips survive **Clear** and
@@ -150,6 +150,12 @@ Optional settings, all in the app itself:
   default **skin tone** once and the whole panel uses it; hold any emoji for its other tones and its
   gendered forms. **Emoji in suggestions** (off by default) puts an emoji in the suggestion strip when
   you type the name of a thing.
+- **Faces** — kaomoji, behind the **Faces** tile. 126 of them across seven categories, six to a
+  page, with the ones you used lately at the front. Tap one and it goes in; the page stays open,
+  because faces come in twos and threes. The magnifier searches by name — `shrug`, `table`, `bear` —
+  which is the only way to search a thing that has no name of its own. Add your own under
+  **Settings → Text faces**: they get a category at the end of the page and come first in search.
+  Anything this phone's font cannot draw is left out rather than shown as a row of boxes.
 - **Key vibration** (on by default) — the short tick under each key press. Android's own touch-vibration
   setting still sits above this one, so turning it on cannot override a phone with haptics switched off.
 - **Voice dictation** (off by default) — downloads a ~40 MB offline speech-to-text model (Vosk) once,
@@ -345,6 +351,25 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v4.2.x** (2026-09-21) — **Text faces, and somewhere to keep your own.**
+
+  A sixth tile on the tools page: **Faces**. 126 kaomoji in seven categories — Happy, Love, Sad,
+  Angry, Unsure, Animals, Doing — six to a page, with the ones you used lately at the front. Tap one
+  and it goes in, and the page stays open, because faces come in twos and threes.
+
+  **Search finds them by name.** A kaomoji has no name of its own the way an emoji does, so every
+  bundled face carries one: `shrug` gives `¯\_(ツ)_/¯`, `table` gives `(╯°□°)╯︵ ┻━┻`. The search key
+  borrows the letters and return runs it, the same as emoji and GIFs.
+
+  **Add your own** under **Settings → Text faces**. They sit in a category at the end of the page and
+  come first when you search.
+
+  Each face is checked against the phone's font **one code point at a time**. `Paint.hasGlyph` asks
+  whether something draws as a single glyph, which is the right question for an emoji and the wrong
+  one for five characters of punctuation — asked of a whole face it says no every time. Combining
+  marks are skipped, because a lone accent has no glyph of its own in most fonts and still draws
+  perfectly well over the letter in front of it.
 
 - **v4.1.x** (2026-09-20) — **Installing a language now does something.**
 

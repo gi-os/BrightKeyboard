@@ -39,6 +39,7 @@
     <string name="tool_clipboard">Clipboard</string>
     <string name="tool_emoji">Emoji</string>
     <string name="tool_gifs">GIFs</string>
+    <string name="tool_kaomoji">Faces</string>
     <string name="tool_one_handed">One-handed</string>
     <string name="tool_full_width">Full width</string>
     <string name="tool_hide">Hide keyboard</string>
@@ -60,6 +61,18 @@
     <string name="gifs_save">Save</string>
     <string name="gifs_saved">Saved</string>
     <string name="gifs_cleared">Using the built-in key</string>
+    <!-- The kaomoji page and the screen where you add your own. -->
+    <string name="kaomoji_search_hint">Type to find a face</string>
+    <string name="kaomoji_loading">Loading faces…</string>
+    <string name="kaomoji_none">No face for that</string>
+    <string name="setup_kaomoji">Text faces</string>
+    <string name="kaomoji_title">Text faces</string>
+    <string name="kaomoji_blurb">Faces made of punctuation, on the Faces tile of the tools page. The ones you add here get a category of their own at the end, and come first when you search.</string>
+    <string name="kaomoji_hint">Paste or type a face</string>
+    <string name="kaomoji_empty">None of your own yet.</string>
+    <string name="kaomoji_rejected">One line, %1$d characters at most</string>
+    <string name="kaomoji_remove">Remove %1$s</string>
+
     <string name="clip_clear">Clear</string>
     <string name="clip_empty">Nothing copied yet. What you copy in other apps shows up here.</string>
     <string name="clip_off">Clipboard history is off. Turn it on in Settings.</string>

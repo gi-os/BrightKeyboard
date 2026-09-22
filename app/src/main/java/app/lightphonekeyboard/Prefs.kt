@@ -38,6 +38,8 @@ object Prefs {
     private const val KEY_HAPTICS = "haptics"
     private const val KEY_SKIN_TONE = "skin_tone"
     private const val KEY_RECENT_EMOJI = "recent_emoji"
+    private const val KEY_RECENT_KAOMOJI = "recent_kaomoji"
+    private const val KEY_USER_KAOMOJI = "user_kaomoji"
     private const val KEY_EMOJI_SUGGEST = "emoji_suggest"
     private const val KEY_SWIPE_STRENGTH = "swipe_strength"
     private const val KEY_SWIPE_ALTERNATES = "swipe_alternates"
@@ -289,6 +291,18 @@ object Prefs {
      * within reach without opening the panel at all. Off by default: it costs a strip slot that
      * would otherwise hold a word, and the panel is still there for anyone who does not want this.
      */
+    /** Text faces used lately, newest first, newline-separated. See [RecentEmoji]. */
+    fun recentKaomoji(c: Context): String? = prefs(c).getString(KEY_RECENT_KAOMOJI, null)
+
+    fun setRecentKaomoji(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_RECENT_KAOMOJI, value).apply()
+
+    /** The faces the user wrote down themselves, one a line. See [Kaomoji.parseUser]. */
+    fun userKaomoji(c: Context): String? = prefs(c).getString(KEY_USER_KAOMOJI, null)
+
+    fun setUserKaomoji(c: Context, value: String) =
+        prefs(c).edit().putString(KEY_USER_KAOMOJI, value).apply()
+
     fun emojiSuggestions(c: Context): Boolean = prefs(c).getBoolean(KEY_EMOJI_SUGGEST, false)
 
     fun setEmojiSuggestions(c: Context, value: Boolean) =

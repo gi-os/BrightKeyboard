@@ -168,6 +168,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         engine.reloadForgottenWords()
         engine.ensureKeypad()   // the layout may have been switched to the keypad since last time
         keyboard?.emojiPanel?.let { it.prepare(); it.reload() }
+        keyboard?.kaomojiPanel?.let { it.prepare(); it.reload() }
         updateShift()
         refreshSuggestions()
     }
@@ -753,6 +754,26 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     }
 
     /**
+     * A text face, inserted whole and left on the page.
+     *
+     * The composing state is cleared first for the reason [onPaste] clears it — the corrector holds
+     * the word at the cursor, and after a face that word is a row of brackets. What it does *not*
+     * do is hand the letters back: faces are used in twos and threes, and a page that closed itself
+     * after every one would cost four taps to send `(╯°□°)╯︵ ┻━┻` twice.
+     */
+    override fun onKaomoji(text: String) {
+        val ic = currentInputConnection ?: return
+        if (padOpen) resetPadWord()
+        settleMultiTap()
+        clearUndo()
+        clearAlternatives()
+        lateWord = null
+        lateTerminator = null
+        ic.finishComposingText()
+        ic.commitText(text, 1)
+    }
+
+    /**
      * A picked GIF. Downloaded and handed to the field on a background thread.
      *
      * The InputConnection is read on the keyboard's thread and used on another, which is allowed —
@@ -879,7 +900,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     // query lives here and nowhere else, and nothing is committed until a result is tapped.
 
     /** Which panel a running search belongs to. Both borrow the same letter keys. */
-    private enum class SearchKind { EMOJI, GIF }
+    private enum class SearchKind { EMOJI, KAOMOJI, GIF }
 
     /** The live query, or null when no search is running. */
     private var panelQuery: StringBuilder? = null
@@ -898,6 +919,13 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
 
     override fun onEmojiSearch() {
         searchKind = SearchKind.EMOJI
+        panelQuery = StringBuilder()
+        keyboard?.showLetters()
+        refreshPanelSearch()
+    }
+
+    override fun onKaomojiSearch() {
+        searchKind = SearchKind.KAOMOJI
         panelQuery = StringBuilder()
         keyboard?.showLetters()
         refreshPanelSearch()
@@ -935,6 +963,7 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         val kb = keyboard ?: return
         val hint = when (searchKind) {
             SearchKind.EMOJI -> null
+            SearchKind.KAOMOJI -> getString(R.string.kaomoji_search_hint)
             SearchKind.GIF -> app.lightphonekeyboard.api.KlipyApi.SEARCH_HINT
         }
         kb.setSearchQuery(q, hint)
@@ -958,9 +987,12 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         // The emoji index cannot answer a one-letter query — it would return nothing, and a panel
         // showing nothing with no message reads as broken. Said here rather than silently refused,
         // because the user pressed return and is owed an answer.
-        if (kind == SearchKind.EMOJI && q.isNotEmpty() &&
-            q.length < app.lightphonekeyboard.text.Emoji.MIN_QUERY
-        ) {
+        val shortest = when (kind) {
+            SearchKind.EMOJI -> app.lightphonekeyboard.text.Emoji.MIN_QUERY
+            SearchKind.KAOMOJI -> app.lightphonekeyboard.text.Kaomoji.MIN_QUERY
+            SearchKind.GIF -> 1
+        }
+        if (q.isNotEmpty() && q.length < shortest) {
             keyboard?.flashOverSearch(getString(R.string.emoji_search_short))
             return
         }
@@ -969,12 +1001,14 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         if (q.isEmpty()) {
             when (kind) {
                 SearchKind.EMOJI -> kb.showEmojiSearch("")
+                SearchKind.KAOMOJI -> kb.showKaomojiSearch("")
                 SearchKind.GIF -> kb.showGifSearch("")
             }
             return
         }
         when (kind) {
             SearchKind.EMOJI -> kb.showEmojiSearch(q)
+            SearchKind.KAOMOJI -> kb.showKaomojiSearch(q)
             SearchKind.GIF -> kb.showGifSearch(q)
         }
     }
