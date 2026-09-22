@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v4.2.x** (tag `v4.2.<n>`). `applicationId` is `com.gios.brightkeyboard`.
+**Current release: v4.3.x** (tag `v4.3.<n>`). `applicationId` is `com.gios.brightkeyboard`.
 
 It was `app.lightphonekeyboard` up to v3.11, which is the id of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard), the project this is a fork of. Keeping it stopped him shipping his own keyboard to a phone that had this one, so it went back. v3.11 hands its settings, saved words and learned touch model to v4.0 on first launch — see [`Migration.kt`](app/src/main/java/app/lightphonekeyboard/Migration.kt).
 
@@ -351,6 +351,24 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v4.3.x** (2026-09-22) — **Hide means hide.**
+
+  Pressing the hide-keyboard key typed a space. It was worst with the mic turned off, because
+  that puts Hide directly beside the space bar, and a video of it arrived on Discord.
+
+  The cause was the touch model doing exactly what it was built to do, one key too far. Space,
+  return and delete learn where a typist actually lands on them and move their hit rectangle to
+  meet the finger. The sideways correction is kept in units of the key's own width, so a stored
+  model means the same thing at every keyboard size — and on a bar five cells wide the allowed
+  correction came to a cell and a half, which is the whole of the one-cell key next to it. A
+  hide key that is *not* tracked had no way to hold its ground.
+
+  Two changes. A tap on the painted face of any control key types that key, the same promise a
+  letter's core has always had; only the gutter around it is open to a learned target. And a big
+  key's learned reach is capped at half a letter width in pixels (`TouchModel.bigKeyShift`),
+  which is as far as a systematic miss goes before the finger is on the next key. Learning is
+  unchanged; what changed is how far it is allowed to act.
 
 - **v4.2.x** (2026-09-21) — **Text faces, and somewhere to keep your own.**
 

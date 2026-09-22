@@ -3375,6 +3375,14 @@ class LightKeyboardView @JvmOverloads constructor(
             bigKeyUnder(x, y)?.let { return it }
             return resolveLetterTo(x, y, home)
         }
+        // **A drawn control key is a promise too.** A tap on the painted face of the hide key, the
+        // mic, the globe or the toolbox types that key, whatever the space bar has learned. Until
+        // 4.3 this line was `bigKeyUnder(x, y) ?: raw`, so the space bar's learned reach — up to
+        // 30% of its own width, which on a five-cell bar is most of a one-cell neighbour — took
+        // every tap on the key beside it. With the mic off, that key is Hide, and hiding the
+        // keyboard typed a space instead (a Discord video, 2026-09-22). Only the gutter around a
+        // control key is open to a learned target, the same rule a letter's core already has.
+        if (raw.vis.contains(x, y) && slotFor(raw.id) < 0) return raw
         return bigKeyUnder(x, y) ?: raw
     }
 
@@ -3391,7 +3399,12 @@ class LightKeyboardView @JvmOverloads constructor(
         for (k in trackedKeys) {
             val slot = slotFor(k.id)
             if (slot < 0) continue
-            val px = x - touch.meanX(slot) * unitXFor(k, slot)
+            // The sideways correction is stored in units of the key's own width, which is right for
+            // a miss along a wide bar and wrong as a reach into the next key: MEAN_CLAMP of a
+            // five-cell space bar is a cell and a half. Capped here, in pixels, at half a letter —
+            // the most a finger can be systematically off by and still be aiming at this key.
+            val shift = TouchModel.bigKeyShift(touch.meanX(slot) * unitXFor(k, slot), letterKeyW)
+            val px = x - shift
             val py = y - touch.meanY(slot) * rowPitch
             if (k.hit.contains(px, py)) return k
         }

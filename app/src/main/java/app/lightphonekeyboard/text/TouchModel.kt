@@ -308,6 +308,9 @@ class TouchModel(private val prior: Prior) {
          */
         const val ANCHOR_FRAC = 0.85f
 
+        /** A big key's learned target may reach at most this many letter widths sideways. */
+        const val BIG_KEY_REACH = 0.5f
+
         const val RATE = 0.06f          // EMA step for the mean; ~30 taps, slow enough to ignore strays
 
         /**
@@ -349,6 +352,19 @@ class TouchModel(private val prior: Prior) {
          */
         fun anchored(dx: Float, dy: Float, halfW: Float, halfH: Float): Boolean =
             abs(dx) <= ANCHOR_FRAC * halfW && abs(dy) <= ANCHOR_FRAC * halfH
+
+        /**
+         * How far a big key's hit rectangle may move sideways to meet a learned miss, in pixels.
+         *
+         * [shiftPx] is the learned mean times the key's own width; [letterW] is one letter key. The
+         * answer is the shift clamped to half a letter either way. A big key's x unit is its own
+         * width so the number stays meaningful across sizes, but a reach is a reach in pixels: half
+         * a letter is as far as a systematic miss goes before the finger is on the next key.
+         */
+        fun bigKeyShift(shiftPx: Float, letterW: Float): Float {
+            val cap = abs(letterW) * BIG_KEY_REACH
+            return shiftPx.coerceIn(-cap, cap)
+        }
 
         /**
          * Restore a serialized model; anything unreadable falls back to the prior, never to zeroes.

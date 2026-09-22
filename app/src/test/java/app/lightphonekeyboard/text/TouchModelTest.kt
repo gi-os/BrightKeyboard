@@ -408,4 +408,13 @@ class TouchModelTest {
         assertEquals(0f, m.count(E), 1e-6f)
         assertEquals(0f, m.drift(), 1e-6f)
     }
+
+    @Test
+    fun `a big key's sideways reach is capped at half a letter`() {
+        // A five-cell space bar at MEAN_CLAMP would move 1.5 letters; it may move half of one.
+        assertEquals(25f, TouchModel.bigKeyShift(0.3f * 250f, 50f), 1e-4f)
+        assertEquals(-25f, TouchModel.bigKeyShift(-0.3f * 250f, 50f), 1e-4f)
+        // A small correction passes through untouched.
+        assertEquals(10f, TouchModel.bigKeyShift(10f, 50f), 1e-4f)
+    }
 }

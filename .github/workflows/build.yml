@@ -80,8 +80,9 @@ jobs:
           #      and it reads 3.11's settings, saved words and touch model across on first launch.
           # 4.1: a language change actually reloads the dictionary and character model.
           # 4.2: text faces — a Faces tile on the tools page, and your own kept in settings.
+          # 4.3: a tap on a drawn control key types that key; the space bar's learned reach is capped.
           # CI reads only major.minor from here, so this line is where a feature release is declared.
-          echo "name=4.2.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "name=4.3.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       # The typing logic (dictionary, autocorrect, swipe decoding) is pure Kotlin with no Android
