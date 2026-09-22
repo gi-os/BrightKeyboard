@@ -17,6 +17,7 @@ import android.view.textservice.SpellCheckerSession.SpellCheckerSessionListener
 import android.view.textservice.SuggestionsInfo
 import android.view.textservice.TextInfo
 import android.view.textservice.TextServicesManager
+import app.lightphonekeyboard.text.FieldKind
 import app.lightphonekeyboard.text.Alternatives
 import app.lightphonekeyboard.text.Clips
 import app.lightphonekeyboard.text.ContextRanker
@@ -1126,8 +1127,24 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         broadcastImeVisible(false)
     }
 
+    /**
+     * Tell whoever is listening that the keyboard is up or down — and, since 4.4, how tall it is.
+     *
+     * BrightControl's edge-swipe strips are overlay windows the full height of the screen, and it
+     * reads no window content by design, so it cannot find the keyboard by itself. The height is
+     * what lets it end its strips where the keys begin, so a touch on Q or shift is a key and not
+     * the start of a back gesture. Measured from the view rather than the window: the view is the
+     * window's whole content, lift and all, and it is the number the keys are laid out against.
+     * Zero while the view has no size yet, which the receiver treats as "up, height unknown".
+     */
     private fun broadcastImeVisible(visible: Boolean) {
-        runCatching { sendBroadcast(Intent(ACTION_IME_VISIBILITY).putExtra(EXTRA_VISIBLE, visible)) }
+        runCatching {
+            sendBroadcast(
+                Intent(ACTION_IME_VISIBILITY)
+                    .putExtra(EXTRA_VISIBLE, visible)
+                    .putExtra(EXTRA_HEIGHT, if (visible) keyboard?.height ?: 0 else 0),
+            )
+        }
     }
 
     // ------------------------------------------------------------------ suggestion strip
@@ -1370,6 +1387,10 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
     private fun refreshSuggestions() {
         val kb = keyboard ?: return
         if (!Prefs.suggestions(this)) return
+        // No completions over an address or a password: a strip of English words above a URL bar
+        // offers replacements for something that was never a word, and over a password it echoes
+        // what is being typed. The strip is cleared rather than left holding the last field's words.
+        if (!fieldIsProse()) { kb.setSuggestions(emptyList()); return }
         val s = engine.suggester
         if (s == null) { kb.setSuggestions(emptyList()); return }
         // Mid-swipe-alternatives, the strip shows those instead: they are what the user is choosing
@@ -1683,7 +1704,15 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         spell = tsm.newSpellCheckerSession(null, Locale.getDefault(), this, false)
     }
 
-    private fun autocorrectOn(): Boolean = Prefs.autocorrect(this)
+    /**
+     * Whether a finished word may be replaced: the setting, and the field. An address bar, an email
+     * field or a password box declares itself through `inputType`, and a correction there is a wrong
+     * page or a failed login rather than a fixed typo. See [FieldKind].
+     */
+    private fun autocorrectOn(): Boolean = Prefs.autocorrect(this) && fieldIsProse()
+
+    /** The current field, by its own account, holds words. See [FieldKind.correctable]. */
+    private fun fieldIsProse(): Boolean = FieldKind.correctable(currentInputEditorInfo?.inputType ?: 0)
 
     /**
      * The replacement for a just-finished word, or null to leave it alone.
@@ -1861,6 +1890,8 @@ class LightImeService : InputMethodService(), LightKeyboardView.Listener, SpellC
         /** Broadcast so our overlays can dodge the keyboard. Implicit; caught by a runtime receiver. */
         const val ACTION_IME_VISIBILITY = "app.lightphonekeyboard.IME_VISIBILITY"
         const val EXTRA_VISIBLE = "visible"
+        /** The keyboard's height in pixels while visible, 0 otherwise. Read by BrightControl 4.37. */
+        const val EXTRA_HEIGHT = "height"
         /** Window of text to inspect when deleting the last grapheme cluster (covers long emoji). */
         private const val GRAPHEME_LOOKBACK = 16
         /** Below this a word is too short to name anything, and the emoji slot stays a word slot. */

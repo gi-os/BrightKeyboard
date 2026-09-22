@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v4.3.x** (tag `v4.3.<n>`). `applicationId` is `com.gios.brightkeyboard`.
+**Current release: v4.4.x** (tag `v4.4.<n>`). `applicationId` is `com.gios.brightkeyboard`.
 
 It was `app.lightphonekeyboard` up to v3.11, which is the id of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard), the project this is a fork of. Keeping it stopped him shipping his own keyboard to a phone that had this one, so it went back. v3.11 hands its settings, saved words and learned touch model to v4.0 on first launch — see [`Migration.kt`](app/src/main/java/app/lightphonekeyboard/Migration.kt).
 
@@ -351,6 +351,21 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v4.4.x** (2026-09-22) — **An address is not a misspelling.**
+
+  Typing a website into WebTools' address bar had autocorrect fighting every part of it, and the
+  suggestion strip offering English words for a hostname. The keyboard read the field's type to
+  pick the numbers layer for a phone number and then ignored it for everything else.
+
+  `FieldKind.correctable` reads `inputType` the way Android's own keyboard does. Autocorrect and
+  the strip stay off in a URI or email field, any kind of password, a list filter, and any field
+  whose app set `TYPE_TEXT_FLAG_NO_SUGGESTIONS`; a field that declared nothing is prose, as it
+  always was. WebTools declares its address bar as a URI, so this is the half that was missing.
+  Auto-capitalization already followed the field (a URL field asks for none). Five tests.
+
+  Also: the show/hide broadcast now carries the keyboard's height, so BrightControl 4.37 can end
+  its edge-swipe strips where the keys begin.
 
 - **v4.3.x** (2026-09-22) — **Hide means hide.**
 
