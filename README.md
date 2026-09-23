@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v4.4.x** (tag `v4.4.<n>`). `applicationId` is `com.gios.brightkeyboard`.
+**Current release: v4.5.x** (tag `v4.5.<n>`). `applicationId` is `com.gios.brightkeyboard`.
 
 It was `app.lightphonekeyboard` up to v3.11, which is the id of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard), the project this is a fork of. Keeping it stopped him shipping his own keyboard to a phone that had this one, so it went back. v3.11 hands its settings, saved words and learned touch model to v4.0 on first launch — see [`Migration.kt`](app/src/main/java/app/lightphonekeyboard/Migration.kt).
 
@@ -351,6 +351,26 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v4.5.x** (2026-09-23) — **A moved keyboard stays close, and its keys got bigger.**
+
+  A narrowed keyboard could be dragged hard against one edge with a third of the screen empty beside
+  it. It now shifts only a little either way: neither side may be left more than 22% empty. The
+  narrowest it goes is 70% of the screen, up from 55%, where ten letters were about 5 mm wide.
+
+  **Bigger targets when narrowed.** The keys get taller to make up half of the width they gave away,
+  so a 70% keyboard has keys 15% taller. The edge keys also take the near part of the empty strip, so
+  a thumb that overshoots q or p types q or p.
+
+  **Fixed:**
+
+  - Lifting one finger at the end of a pinch made the keyboard jump sideways. The drag now continues
+    from the finger that stays.
+  - With the keyboard centered, the reset button's target covered the rightmost keys (p, l, delete,
+    return). It now sits only in the empty strip, on whichever side has room.
+  - On a keyboard narrowed by pinching, the reset button did nothing. It now puts the width back.
+  - A sideways drag did not move the keys until the keyboard also moved up or down.
+  - Dragging holds at the center for a few dp, so it is easy to put back.
 
 - **v4.4.x** (2026-09-22) — **An address is not a misspelling.**
 

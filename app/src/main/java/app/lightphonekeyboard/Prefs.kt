@@ -390,8 +390,18 @@ object Prefs {
     fun resetKbGeometry(c: Context) = prefs(c).edit()
         .remove(KEY_KB_WIDTH).remove(KEY_KB_ALIGN).remove(KEY_KB_LIFT).remove(KEY_KB_SCALE).apply()
 
-    /** Narrower than this and the keys are too small to hit; taller and it eats the field. */
-    const val KB_WIDTH_MIN = 0.55f
+    /**
+     * Narrower than this and the keys are too small to hit; taller and it eats the field. It was
+     * 0.55 until 4.5, which left ten letters about 5 mm wide on this screen.
+     */
+    const val KB_WIDTH_MIN = 0.70f
+
+    /**
+     * The widest empty strip either side of a moved keyboard may leave, as a fraction of the screen.
+     * Without it a narrow keyboard could be pushed hard against one edge with a third of the screen
+     * empty beside it, and that strip is where a thumb reaching for the far keys lands.
+     */
+    const val KB_MAX_GUTTER = 0.22f
     const val KB_LIFT_MAX = 0.60f
     const val KB_SCALE_MIN = 0.75f
     const val KB_SCALE_MAX = 1.35f

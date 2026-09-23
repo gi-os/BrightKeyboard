@@ -509,6 +509,13 @@ class LightKeyboardView @JvmOverloads constructor(
         compact = height == Prefs.HEIGHT_SHORT
         // Read before the metrics below, which size the suggestion strip from it.
         suggestionsOn = Prefs.suggestions(context)
+        // Geometry too: the metrics below scale by it. These were read further down, after the
+        // metrics, so a fresh process drew its first keyboard at the previous call's scale.
+        kbWidth = Prefs.kbWidth(context)
+        kbAlign = Prefs.kbAlign(context)
+        kbLift = Prefs.kbLift(context)
+        kbScale = Prefs.kbScale(context)
+        oneHanded = Prefs.oneHanded(context)
         when (height) {
             Prefs.HEIGHT_SHORT -> {
                 padTop = dpf(4); padBottom = dpf(5); padSide = dpf(4)
@@ -532,6 +539,9 @@ class LightKeyboardView @JvmOverloads constructor(
             padTop *= kbScale; padBottom *= kbScale; rowKeyH *= kbScale
             keyTextSize *= kbScale; labelTextSize *= kbScale; emojiTextSize *= kbScale
         }
+        // A narrowed keyboard gets taller keys to make up some of the width it gave away. Height
+        // only: the letters already fit, and it is the target, not the glyph, that got smaller.
+        rowKeyH *= narrowHeightBoost()
         rowPitch = rowKeyH + keyGap * 2
         // Deliberately small — about half a key. It is a glance target, not a row of buttons, and the
         // keyboard is a clone of a design that has no suggestion bar at all, so the less of one it adds
@@ -561,10 +571,6 @@ class LightKeyboardView @JvmOverloads constructor(
         touchOverlay = Prefs.touchOverlay(context)
         touchLayers = TouchOverlay.Layers.from(context)
         blankLetters = Prefs.blankLetters(context)
-        kbWidth = Prefs.kbWidth(context)
-        kbAlign = Prefs.kbAlign(context)
-        kbLift = Prefs.kbLift(context)
-        kbScale = Prefs.kbScale(context)
         haptics = Prefs.haptics(context)
         hiddenKeys.clear()
         if (!Prefs.voiceEnabled(context)) hiddenKeys.add(Key.MIC)
@@ -961,8 +967,9 @@ class LightKeyboardView @JvmOverloads constructor(
             // the visible cell edge, i.e. the midline of the gutter (nearest-key by design). The band
             // is the whole screen unless the keyboard has been narrowed to one hand, and then the
             // strip beyond it belongs to the button that puts it back.
-            val hitLeft = if (j == 0) contentLeft else cellLeft
-            val hitRight = if (j == row.size - 1) contentLeft + contentW else cellRight
+            // Past the band, the edge keys also take the near part of any gutter (see edgeReach).
+            val hitLeft = if (j == 0) contentLeft - edgeReach(leftGutter) else cellLeft
+            val hitRight = if (j == row.size - 1) contentLeft + contentW + edgeReach(rightGutter) else cellRight
             placed.add(
                 PlacedKey(
                     id,
@@ -1083,9 +1090,45 @@ class LightKeyboardView @JvmOverloads constructor(
             return when (oneHanded) {
                 Prefs.HAND_RIGHT -> slack
                 Prefs.HAND_LEFT -> 0f
-                else -> slack * kbAlign
+                else -> {
+                    val (lo, hi) = alignRange(slack)
+                    lo + (hi - lo) * kbAlign
+                }
             }
         }
+
+    /**
+     * The left edges a moved keyboard may take. Neither side may be left with more than
+     * [Prefs.KB_MAX_GUTTER] of the screen empty, so a narrow keyboard can shift a little either
+     * way but not be pushed against one edge. kbAlign 0..1 spans this range, not the whole slack.
+     */
+    private fun alignRange(slack: Float): Pair<Float, Float> {
+        val maxGutter = width * Prefs.KB_MAX_GUTTER
+        val lo = (slack - maxGutter).coerceAtLeast(0f)
+        val hi = minOf(slack, maxGutter)
+        return if (hi < lo) (slack / 2f) to (slack / 2f) else lo to hi
+    }
+
+    /** Height multiplier for a narrowed keyboard: half of the width it lost, as height. */
+    private fun narrowHeightBoost(): Float {
+        val frac = kbWidth * (if (oneHanded != Prefs.HAND_OFF) ONE_HANDED_FRACTION else 1f)
+        return 1f + (1f - frac).coerceAtLeast(0f) * NARROW_HEIGHT_GAIN
+    }
+
+    private val leftGutter: Float get() = contentLeft.coerceAtLeast(0f)
+    private val rightGutter: Float get() = (width - contentLeft - contentW).coerceAtLeast(0f)
+
+    /**
+     * How far the edge keys' targets reach into a gutter. A thumb aiming for q or p on a narrowed
+     * keyboard overshoots, and that overshoot used to land on the reset button — the whole layout
+     * sprang back to full width mid-word. The keys now take the near part of the strip, and the
+     * button keeps only what is left, if what is left is still big enough to press on purpose.
+     */
+    private fun edgeReach(gutter: Float): Float {
+        if (gutter <= 0f) return 0f
+        val reach = minOf(gutter, maxOf(dpf(20), contentW * EDGE_REACH_FRACTION))
+        return if (gutter - reach < dpf(RESET_MIN_DP)) gutter else reach
+    }
 
     /**
      * The button in the strip a narrowed keyboard leaves empty.
@@ -1094,9 +1137,16 @@ class LightKeyboardView @JvmOverloads constructor(
      * user who narrowed the keyboard by accident should not have to find the setting to undo it.
      */
     private fun layoutHandReset() {
-        val left = if (oneHanded == Prefs.HAND_RIGHT) 0f else contentW
-        val right = if (oneHanded == Prefs.HAND_RIGHT) contentLeft else width.toFloat()
-        if (right - left < 1f) return
+        // One per side that has room left over after the edge keys take their reach. This used to
+        // assume the keys started at 0, so a centred keyboard had the button's target lying over
+        // its own rightmost keys (p, l, delete, return) and nothing at all in the left strip.
+        val lw = leftGutter - edgeReach(leftGutter)
+        if (lw >= dpf(RESET_MIN_DP)) addHandReset(0f, lw)
+        val rw = rightGutter - edgeReach(rightGutter)
+        if (rw >= dpf(RESET_MIN_DP)) addHandReset(width - rw, width.toFloat())
+    }
+
+    private fun addHandReset(left: Float, right: Float) {
         val visInset = dpf(4)
         placed.add(
             PlacedKey(
@@ -1514,6 +1564,19 @@ class LightKeyboardView @JvmOverloads constructor(
         // reorders them. Laying the page out again in the first case is what keeps the cell under
         // the finger the face that is drawn in it — the same trap as [commitEmoji].
         if (kaomojiPanel.leadingCount() != before) { kaoPage = 0; rebuild() } else invalidate()
+    }
+
+    /**
+     * The gutter button. It only ever cleared one-handed mode, so on a keyboard narrowed by pinching
+     * it did nothing at all. Now it clears whichever put the gutter there; lift and key size stay.
+     */
+    private fun resetPlacement() {
+        kbWidth = 1f; kbAlign = 0.5f
+        Prefs.setKbGeometry(context, kbWidth, kbAlign, kbLift, kbScale)
+        oneHanded = Prefs.HAND_OFF
+        Prefs.setOneHanded(context, Prefs.HAND_OFF)
+        applyPrefs()
+        rebuild()
     }
 
     private fun setOneHanded(value: String) {
@@ -2336,7 +2399,7 @@ class LightKeyboardView @JvmOverloads constructor(
             if (compact) dpf(7) else dpf(10)
         // The strip button is as tall as the whole keyboard; without a large inset its glyph would
         // be scaled to that height and fill the strip.
-        Key.HAND_RESET -> (minOf(rowKeyH, width * (1f - ONE_HANDED_FRACTION)) / 2f - dpf(11))
+        Key.HAND_RESET -> (minOf(rowKeyH, maxOf(leftGutter, rightGutter)) / 2f - dpf(11))
             .coerceAtLeast(dpf(2))
         Key.MIC, Key.GLOBE -> if (compact) dpf(6) else dpf(9)
         else -> if (compact) dpf(5) else dpf(7)
@@ -3203,6 +3266,7 @@ class LightKeyboardView @JvmOverloads constructor(
     private var startLift = 0f
     private var startWidth = 1f
     private var startScale = 1f
+    private var adjustPointer = -1
 
     fun startAdjusting() {
         adjusting = true
@@ -3258,6 +3322,18 @@ class LightKeyboardView @JvmOverloads constructor(
                 if (adjustBarRect().contains(ev.x, ev.y)) { stopAdjusting(true); return true }
                 adjustFrom = ev.x; adjustFromY = ev.y
                 startAlign = kbAlign; startLift = kbLift
+                adjustPointer = ev.getPointerId(0)
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                // Carry on dragging from wherever the finger that stays is, and from where the pinch
+                // left the keyboard. Anchoring to the first finger's old down point made the board
+                // leap sideways the moment a pinch ended — the "moves way too far" jump.
+                val keep = if (ev.actionIndex == 0) 1 else 0
+                if (keep < ev.pointerCount) {
+                    adjustPointer = ev.getPointerId(keep)
+                    adjustFrom = ev.getX(keep); adjustFromY = ev.getY(keep)
+                    startAlign = kbAlign; startLift = kbLift
+                }
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (ev.pointerCount >= 2) {
@@ -3280,10 +3356,18 @@ class LightKeyboardView @JvmOverloads constructor(
                     }
                     applyScaleNow()
                 } else {
-                    val slack = (width - contentW).coerceAtLeast(1f)
-                    kbAlign = (startAlign + (ev.x - adjustFrom) / slack).coerceIn(0f, 1f)
+                    val idx = ev.findPointerIndex(adjustPointer).takeIf { it >= 0 } ?: 0
+                    val x = ev.getX(idx); val y = ev.getY(idx)
+                    // Finger and keyboard move one-for-one, inside the range alignRange allows.
+                    val (lo, hi) = alignRange((width - contentW).coerceAtLeast(0f))
+                    val travel = hi - lo
+                    kbAlign = if (travel < 1f) 0.5f
+                    else (startAlign + (x - adjustFrom) / travel).coerceIn(0f, 1f)
+                    // Centre is where most people want it back, so it holds for a few dp.
+                    if (abs(kbAlign - 0.5f) * travel < dpf(CENTER_SNAP_DP)) kbAlign = 0.5f
                     val base = (height / (1f + kbLift)).coerceAtLeast(1f)
-                    kbLift = (startLift - (ev.y - adjustFromY) / base).coerceIn(0f, Prefs.KB_LIFT_MAX)
+                    kbLift = (startLift - (y - adjustFromY) / base).coerceIn(0f, Prefs.KB_LIFT_MAX)
+                    relayout()
                     requestLayout()
                 }
                 invalidate()
@@ -3594,7 +3678,7 @@ class LightKeyboardView @JvmOverloads constructor(
             Key.TOOL_KAOMOJI -> openKaomoji()
             Key.TOOL_HIDE -> listener?.onDismiss()
             Key.TOOL_HAND -> startAdjusting()
-            Key.HAND_RESET -> setOneHanded(Prefs.HAND_OFF)
+            Key.HAND_RESET -> resetPlacement()
             Key.CLIP_BACK, Key.TOOL_BACK -> { layer = Layer.LETTERS; rebuild() }
             Key.CLIP_PREV -> { if (clipPage > 0) { clipPage--; rebuild() } }
             Key.CLIP_NEXT -> { if (clipPage < clipPages() - 1) { clipPage++; rebuild() } }
@@ -3835,6 +3919,18 @@ class LightKeyboardView @JvmOverloads constructor(
 
         /** Share of the screen the keys keep when narrowed to one hand. */
         const val ONE_HANDED_FRACTION = 0.80f
+
+        /** Share of lost width given back as key height. 0.7 width → keys 15% taller. */
+        const val NARROW_HEIGHT_GAIN = 0.5f
+
+        /** How far an edge key's target reaches into a gutter, as a share of the key band. */
+        const val EDGE_REACH_FRACTION = 0.07f
+
+        /** Narrower than this and the gutter button is not placed; the edge key takes the strip. */
+        const val RESET_MIN_DP = 36
+
+        /** Dead zone around centre while dragging. */
+        const val CENTER_SNAP_DP = 10
 
         /** How long a [flash] message stays. Long enough to read a short line, and no longer. */
         const val FLASH_MS = 2200L
