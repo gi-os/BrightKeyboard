@@ -21,7 +21,7 @@ every Bright app, at
 > A fork of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard). The keyboard
 > looks exactly the same; typing and autocorrect underneath it are new.
 
-**Current release: v4.5.x** (tag `v4.5.<n>`). `applicationId` is `com.gios.brightkeyboard`.
+**Current release: v4.6.x** (tag `v4.6.<n>`). `applicationId` is `com.gios.brightkeyboard`.
 
 It was `app.lightphonekeyboard` up to v3.11, which is the id of [adam-weber/light-keyboard](https://github.com/adam-weber/light-keyboard), the project this is a fork of. Keeping it stopped him shipping his own keyboard to a phone that had this one, so it went back. v3.11 hands its settings, saved words and learned touch model to v4.0 on first launch — see [`Migration.kt`](app/src/main/java/app/lightphonekeyboard/Migration.kt).
 
@@ -351,6 +351,32 @@ update because the certificate differs — uninstall the old one first.
 Every push to `main` builds, tests, and publishes a signed APK as the next `v1.2.<n>` release (`n` is
 the CI run number) — see [`.github/workflows/build.yml`](.github/workflows/build.yml). Obtainium picks
 it up on its own. A push can bundle more than one commit; only the push's final commit carries the tag.
+
+- **v4.6.x** (2026-09-23) — **The keys learn your hand, and then stay put.**
+
+  The invisible key targets moved too easily. Each key learned on its own from about its last 17
+  taps, so 26 targets wandered separately and never settled.
+
+  **One shared miss, small corrections per key.** Most of a miss is the same on every key: the
+  thumb lands low and a little to one side. That part is now learned once, from every letter, and
+  each key adds a small correction of its own, at most 0.08 of a key. A key you have never tapped
+  still gets the shared part.
+
+  **Learning slows down.** The first taps teach quickly. After that the rate drops to a floor about
+  twelve times lower than before. On the worst case in the tests (40 taps in a row, all on one key,
+  all a fifth of a key off), a settled key moves 0.04 of a key. Before, it moved 0.18.
+
+  **Tighter limits.** Learning can move a target at most 0.2 of a key from where it started. A tap
+  more than 0.6 of a key away moves no target. It still counts toward how widely that key is hit.
+  One key's target can be at most 10% wider or 8% narrower than your average, down from 25% and 15%.
+
+  **Settings → Touch → How much it learns: Off, Gentle, Normal.** Gentle is the default. Normal
+  works the way 4.5 did. Off uses none of what was learned but keeps it, so switching back restores
+  it.
+
+  Your existing learning carries over. The average of what your keys had learned becomes the
+  shared miss, and each key keeps its own centre. The saved format is now `v5`. On the simulated
+  typist who lands 0.65 of a row low, accuracy is 89.5%, up from 88.6%.
 
 - **v4.5.x** (2026-09-23) — **A moved keyboard stays close, and its keys got bigger.**
 

@@ -63,20 +63,61 @@ class TouchModel(private val prior: Prior) {
         init { require(meanX.size == N && meanY.size == N) { "prior must cover $N keys" } }
     }
 
-    private val mx = FloatArray(N) { prior.meanX[it] }
-    private val my = FloatArray(N) { prior.meanY[it] }
+    /**
+     * How much the model is allowed to learn. See [Learning]. Read on every call, so switching it
+     * takes effect on the next tap and never throws away what was learned under another setting.
+     */
+    var learning: Learning = Learning.GENTLE
+
+    // ## Shared offset plus a small per-key correction (4.6)
+    //
+    // Most of a typist's miss is the same on every key: the thumb lands low and a little to one side,
+    // everywhere. Up to 4.5 every key learned that same miss on its own, from its own last dozen or
+    // so taps, so 26 targets wandered independently and the keyboard felt loose. Now the shared part
+    // is learned once, from every letter tap ([gx], [gy]). Each key still keeps its own running
+    // average ([rx], [ry] — its whole learned offset), but only its difference from the shared one is
+    // used, weighted by how many taps back it and bounded by [Learning.residual]. A key with no history
+    // gets the shared part alone, which is most of the benefit.
+    //
+    // Two running averages read against each other, rather than a shared offset and a correction that
+    // both chase the same error: that version split every miss between the two by accident of timing,
+    // and a shared miss came out a fifth short on keys nobody had tapped.
+    //
+    // The big keys do not share it: their x unit is their own width, so a letter's sideways miss means
+    // nothing to them. They keep one offset of their own, bounded by [Learning.shift].
+    private var gx = 0f
+    private var gy = 0f
+    private var gn = 0f
+    private val rx = FloatArray(N)
+    private val ry = FloatArray(N)
     private val vx = FloatArray(N) { prior.sx * prior.sx }
     private val vy = FloatArray(N) { prior.sy * prior.sy }
     private val n = FloatArray(N)
 
+    private fun learnedX(i: Int): Float = learned(i, rx[i], gx)
+    private fun learnedY(i: Int): Float = learned(i, ry[i], gy)
+
+    private fun learned(i: Int, own: Float, shared: Float): Float {
+        val l = learning
+        if (l == Learning.OFF) return 0f
+        if (i >= LETTERS) return own.coerceIn(-l.shift, l.shift)
+        val trust = n[i] / (n[i] + CONFIDENCE_K)
+        val quirk = (trust * (own - shared)).coerceIn(-l.residual, l.residual)
+        return (shared + quirk).coerceIn(-l.shift, l.shift)
+    }
+
     /** Offset from key [i]'s drawn centre to where this typist's taps for it centre (key units). */
-    fun meanX(i: Int): Float = mx[i]
-    fun meanY(i: Int): Float = my[i]
+    fun meanX(i: Int): Float = (prior.meanX[i] + learnedX(i)).coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
+    fun meanY(i: Int): Float = (prior.meanY[i] + learnedY(i)).coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
+
+    /** The offset every letter shares, for the settings readout. */
+    fun sharedX(): Float = gx
+    fun sharedY(): Float = gy
 
     /** Mean vertical offset over every key — for a swipe trace, which has no one key to ask. */
     fun averageMeanY(): Float {
         var s = 0f
-        for (v in my) s += v
+        for (i in 0 until N) s += meanY(i)
         return s / N
     }
 
@@ -102,8 +143,10 @@ class TouchModel(private val prior: Prior) {
     fun sigmaY(i: Int): Float = prior.sy * spread(vy[i], n[i], baseVy())
 
     private fun spread(v: Float, count: Float, base: Float): Float {
+        val l = learning
+        if (l == Learning.OFF) return 1f
         val blended = (count * v + CONFIDENCE_K * base) / (count + CONFIDENCE_K)
-        return sqrt(blended / base).coerceIn(SPREAD_MIN, SPREAD_MAX)
+        return sqrt(blended / base).coerceIn(l.spreadMin, l.spreadMax)
     }
 
     // This typist's average measured scatter, over the keys they have actually used. Recomputed only
@@ -133,8 +176,8 @@ class TouchModel(private val prior: Prior) {
     fun logLikelihood(i: Int, dx: Float, dy: Float): Float {
         val sx = sigmaX(i)
         val sy = sigmaY(i)
-        val ux = (dx - mx[i]) / sx
-        val uy = (dy - my[i]) / sy
+        val ux = (dx - meanX(i)) / sx
+        val uy = (dy - meanY(i)) / sy
         return -0.5f * (ux * ux + uy * uy) - ln(sx) - ln(sy)
     }
 
@@ -146,16 +189,37 @@ class TouchModel(private val prior: Prior) {
      * on this key whatever produced it.
      */
     fun observe(i: Int, dx: Float, dy: Float): Boolean {
-        if (abs(dx - mx[i]) > LEARN_GATE || abs(dy - my[i]) > LEARN_GATE) return false
-        val ex = dx - mx[i]
-        val ey = dy - my[i]
-        mx[i] = (mx[i] + RATE * ex).coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
-        my[i] = (my[i] + RATE * ey).coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
-        if (n[i] < COUNT_CAP) n[i] += 1f     // capped, so a long-standing model can still move house
-        // Variance against the pre-update mean, the usual incremental form.
+        val l = learning
+        if (l == Learning.OFF) return false
+        val ex = dx - meanX(i)
+        val ey = dy - meanY(i)
+        if (abs(ex) > LEARN_GATE || abs(ey) > LEARN_GATE) return false
+        // Variance against the pre-update mean, the usual incremental form. It sees everything inside
+        // a whole key: gating it tighter would censor the sample and flatten every key's spread (see
+        // [hold]). Only the centres get the tighter gate below.
         vx[i] = (vx[i] + RATE_VAR * (ex * ex - vx[i])).coerceIn(VAR_MIN, VAR_MAX)
         vy[i] = (vy[i] + RATE_VAR * (ey * ey - vy[i])).coerceIn(VAR_MIN, VAR_MAX)
         baseDirty = true
+        val count = n[i]
+        if (n[i] < COUNT_CAP) n[i] += 1f     // capped, so a long-standing model can still move house
+        // A tap this far off moves no centre. It still says something about how wide the key is.
+        if (abs(ex) > l.gate || abs(ey) > l.gate) return true
+
+        // Rates fall with evidence: roughly a running average for the first taps, then a floor. Up
+        // to 4.5 the rate was a flat 0.06, so every key's centre was its last ~17 taps and never
+        // stopped moving.
+        // Deviation from where the prior put this key: the quantity both averages are of.
+        val ox = dx - prior.meanX[i]
+        val oy = dy - prior.meanY[i]
+        val keyRate = maxOf(1f / (count + RATE_WARMUP), l.keyRate)
+        rx[i] = (rx[i] + keyRate * (ox - rx[i])).coerceIn(-l.shift, l.shift)
+        ry[i] = (ry[i] + keyRate * (oy - ry[i])).coerceIn(-l.shift, l.shift)
+        if (i < LETTERS) {
+            val gRate = maxOf(1f / (gn + RATE_WARMUP), l.sharedRate)
+            gx = (gx + gRate * (ox - gx)).coerceIn(-l.shift, l.shift)
+            gy = (gy + gRate * (oy - gy)).coerceIn(-l.shift, l.shift)
+            if (gn < SHARED_COUNT_CAP) gn += 1f
+        }
         return true
     }
 
@@ -177,8 +241,11 @@ class TouchModel(private val prior: Prior) {
      */
     fun syncUnseen() {
         val bx = baseVx(); val by = baseVy()
+        // The starting point is read from the prior live (see [meanX]) and what was learned is held as
+        // an offset from it, so a layout change moves the start and keeps the learning. Only the
+        // spread of a key with no history needs putting back.
         for (i in 0 until N) if (n[i] == 0f) {
-            mx[i] = prior.meanX[i]; my[i] = prior.meanY[i]
+            rx[i] = 0f; ry[i] = 0f
             vx[i] = bx; vy[i] = by        // a key with no history is, by definition, average
         }
     }
@@ -211,6 +278,7 @@ class TouchModel(private val prior: Prior) {
      */
     fun hold(i: Int, dx: Float, dy: Float) {
         flush()
+        if (learning == Learning.OFF) return
         heldKey = i; heldX = dx; heldY = dy
     }
 
@@ -227,7 +295,7 @@ class TouchModel(private val prior: Prior) {
     /** How far the model has travelled from the prior, as a mean absolute offset in key units. */
     fun drift(): Float {
         var s = 0f
-        for (i in 0 until N) s += abs(mx[i] - prior.meanX[i]) + abs(my[i] - prior.meanY[i])
+        for (i in 0 until N) s += abs(meanX(i) - prior.meanX[i]) + abs(meanY(i) - prior.meanY[i])
         return s / (2 * N)
     }
 
@@ -236,8 +304,9 @@ class TouchModel(private val prior: Prior) {
     fun copyFrom(other: TouchModel) {
         heldKey = -1
         baseDirty = true
+        gx = other.gx; gy = other.gy; gn = other.gn
         for (i in 0 until N) {
-            mx[i] = other.mx[i]; my[i] = other.my[i]
+            rx[i] = other.rx[i]; ry[i] = other.ry[i]
             vx[i] = other.vx[i]; vy[i] = other.vy[i]
             n[i] = other.n[i]
         }
@@ -246,15 +315,18 @@ class TouchModel(private val prior: Prior) {
     fun reset() {
         heldKey = -1
         baseDirty = true
+        gx = 0f; gy = 0f; gn = 0f
         for (i in 0 until N) {
-            mx[i] = prior.meanX[i]; my[i] = prior.meanY[i]
+            rx[i] = 0f; ry[i] = 0f
             vx[i] = prior.sx * prior.sx; vy[i] = prior.sy * prior.sy
             n[i] = 0f
         }
     }
 
     /**
-     * `v2;mx,my,vx,vy,n;…` — 26 groups in a-z order, so no labels are needed.
+     * `v5;rx,ry,vx,vy,n;…;gx,gy,gn,0,0` — one group per slot in slot order, so no labels are needed,
+     * then one group for the shared offset. rx/ry are each key's own learned offset from the prior. v2–v4 had no shared group and stored each key's whole
+     * centre; [parse] splits those into a shared offset and corrections.
      *
      * Rounded and written with [Float.toString], never a format string: `"%.4f"` follows the device
      * locale, and on a French phone it would write `0,0521` into a comma-separated list.
@@ -263,14 +335,65 @@ class TouchModel(private val prior: Prior) {
         val sb = StringBuilder(VERSION)
         for (i in 0 until N) {
             sb.append(';')
-            sb.append(r(mx[i])).append(',').append(r(my[i])).append(',')
+            sb.append(r(rx[i])).append(',').append(r(ry[i])).append(',')
                 .append(r(vx[i])).append(',').append(r(vy[i])).append(',')
                 .append(r(n[i]))
         }
+        sb.append(';').append(r(gx)).append(',').append(r(gy)).append(',').append(r(gn)).append(",0.0,0.0")
         return sb.toString()
     }
 
     private fun r(v: Float): Float = (v * 10000f).roundToInt() / 10000f
+
+    /**
+     * Take whole centres from a v2–v4 model: each key's centre becomes its own offset, and the shared
+     * offset starts as the tap-weighted average of them. A fortnight of learning carries over as the
+     * new starting point instead of being thrown away. Offsets are kept at the loosest setting's
+     * bound, so switching to Normal later gets them back.
+     */
+    private fun splitCentres(mx: FloatArray, my: FloatArray) {
+        var sx = 0f; var sy = 0f; var w = 0f
+        for (i in 0 until LETTERS) if (n[i] > 0f) {
+            sx += n[i] * (mx[i] - prior.meanX[i]); sy += n[i] * (my[i] - prior.meanY[i]); w += n[i]
+        }
+        val cap = Learning.NORMAL.shift
+        gx = if (w > 0f) (sx / w).coerceIn(-cap, cap) else 0f
+        gy = if (w > 0f) (sy / w).coerceIn(-cap, cap) else 0f
+        gn = w.coerceAtMost(SHARED_COUNT_CAP)
+        for (i in 0 until N) {
+            val dx = mx[i] - prior.meanX[i]
+            val dy = my[i] - prior.meanY[i]
+            rx[i] = if (n[i] > 0f || i >= LETTERS) dx.coerceIn(-cap, cap) else 0f
+            ry[i] = if (n[i] > 0f || i >= LETTERS) dy.coerceIn(-cap, cap) else 0f
+        }
+        baseDirty = true
+    }
+
+    /**
+     * How loose the model is allowed to be. Gio, 2026-09-23: the adaptive keys were "too malleable".
+     *
+     *  - [shift]: how far learning may move a centre from where the prior put it (key units).
+     *  - [residual]: how far one letter may differ from the shared offset. This is what keeps 26
+     *    targets moving together instead of each on its own.
+     *  - [keyRate] / [sharedRate]: the floor the learning rate falls to once a key has history.
+     *  - [gate]: a tap further than this from a centre does not move it (the spread still sees it).
+     *  - [spreadMin] / [spreadMax]: how much tighter or looser than average one key's target may be.
+     *
+     * [NORMAL] is how 4.5 and earlier behaved, give or take the falling rate. [OFF] keeps what was
+     * learned but uses none of it: every target is the drawn key and the population prior.
+     */
+    enum class Learning(
+        val shift: Float, val residual: Float, val keyRate: Float, val sharedRate: Float,
+        val gate: Float, val spreadMin: Float, val spreadMax: Float,
+    ) {
+        OFF(0f, 0f, 0f, 0f, 0f, 1f, 1f),
+        GENTLE(0.20f, 0.08f, 0.005f, 0.003f, 0.6f, 0.92f, 1.10f),
+        NORMAL(0.30f, 0.30f, 0.06f, 0.01f, 1.0f, SPREAD_MIN, SPREAD_MAX);
+
+        companion object {
+            fun from(name: String?): Learning = entries.firstOrNull { it.name.equals(name, true) } ?: GENTLE
+        }
+    }
 
     companion object {
         /** Slots 0..25 are a-z. */
@@ -290,7 +413,7 @@ class TouchModel(private val prior: Prior) {
         const val SLOT_SYMBOLS = 30
 
         const val N = 31
-        const val VERSION = "v4"
+        const val VERSION = "v5"
 
         /**
          * Formats that can still be read. Slots have only ever been appended, and a group has always
@@ -298,7 +421,7 @@ class TouchModel(private val prior: Prior) {
          * leave the rest on the prior. Refusing it would throw away a fortnight of learning over a
          * few keys the model did not know about at the time.
          */
-        private val READABLE = setOf("v2", "v3", "v4")
+        private val LEGACY = setOf("v2", "v3", "v4")
 
         /**
          * A tap inside this fraction of a drawn key's box, per axis, always types that key. 0.85 per
@@ -311,22 +434,24 @@ class TouchModel(private val prior: Prior) {
         /** A big key's learned target may reach at most this many letter widths sideways. */
         const val BIG_KEY_REACH = 0.5f
 
-        const val RATE = 0.06f          // EMA step for the mean; ~30 taps, slow enough to ignore strays
+        /** Pseudo-count behind a key's first taps: its first tap moves it a tenth of the way. */
+        const val RATE_WARMUP = 10f
+        const val SHARED_COUNT_CAP = 5000f
 
         /**
          * EMA step for the spread, an order of magnitude slower. A variance needs far more samples
-         * than a mean does for the same precision — at [RATE] it is built from the last dozen or so
+         * than a mean does for the same precision — at 0.06 it is built from the last dozen or so
          * taps, and on real scatter that is noisy enough to push a perfectly steady key to the end of
          * the band by luck, which is worse than not measuring it.
          */
         const val RATE_VAR = 0.008f
         /** A whole key away from the centre, accepted or not, is evidence about some other key. */
         const val LEARN_GATE = 1.0f
-        /** A learned centre may move this far and no further. It is correcting for where a fingertip
+        /** Hard bound on a centre, prior included, whatever the setting. It is correcting for where a fingertip
          *  is sensed against where it was aimed — a few millimetres (Holz & Baudisch) — so 0.3 of a key
          *  is already generous, and past it the keyboard would be guessing at intent rather than
          *  correcting a sensor. It also keeps the corrected point inside the key it was aimed at. */
-        const val MEAN_CLAMP = 0.3f
+        const val MEAN_CLAMP = 0.35f
         /**
          * σ 0.5 key units. Not a safety rail — it sets how much a well-used key may outscore a
          * barely-used one through the `-ln σ` term alone. Real finger scatter on a phone keyboard runs
@@ -338,7 +463,7 @@ class TouchModel(private val prior: Prior) {
 
         /** How much looser or tighter than this typist's own average one key's target may be. Bounds
          *  the standing advantage the `-ln σ` term can hand a well-used key over a barely-used one. */
-        const val SPREAD_MIN = 0.85f
+        const val SPREAD_MIN = 0.85f    // the widest band any setting uses; see Learning
         const val SPREAD_MAX = 1.25f
         /** [observe] cannot exceed it anyway, since [LEARN_GATE] binds first; a corrupt [parse] can. */
         const val VAR_MAX = 1.0f
@@ -370,26 +495,49 @@ class TouchModel(private val prior: Prior) {
          * Restore a serialized model; anything unreadable falls back to the prior, never to zeroes.
          *
          * An older model is shorter. It is read as far as it goes and the newer slots keep the prior;
-         * see [READABLE].
+         * see [LEGACY].
          */
         fun parse(s: String?, prior: Prior): TouchModel {
             val m = TouchModel(prior)
             val parts = s?.split(';') ?: return m
-            if (parts[0] !in READABLE) return m
-            val slots = parts.size - 1
-            if (slots !in 1..N) return m
-            for (i in 0 until slots) {
-                val f = parts[i + 1].split(',')
+            val legacy = parts[0] in LEGACY
+            if (!legacy && parts[0] != VERSION) return m
+            val groups = ArrayList<FloatArray>()
+            for (g in parts.drop(1)) {
+                val f = g.split(',')
                 if (f.size != 5) return m
                 val a = FloatArray(5)
                 for (j in 0 until 5) a[j] = f[j].toFloatOrNull() ?: return m
                 if (a.any { !it.isFinite() }) return m
-                m.mx[i] = a[0].coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
-                m.my[i] = a[1].coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
+                groups.add(a)
+            }
+            if (legacy) {
+                if (groups.size !in 1..N) return m
+                val mx = FloatArray(N) { prior.meanX[it] }
+                val my = FloatArray(N) { prior.meanY[it] }
+                for ((i, a) in groups.withIndex()) {
+                    mx[i] = a[0].coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
+                    my[i] = a[1].coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
+                    m.vx[i] = a[2].coerceIn(VAR_MIN, VAR_MAX)
+                    m.vy[i] = a[3].coerceIn(VAR_MIN, VAR_MAX)
+                    m.n[i] = a[4].coerceIn(0f, COUNT_CAP)
+                }
+                m.splitCentres(mx, my)
+                return m
+            }
+            if (groups.size != N + 1) return m
+            for (i in 0 until N) {
+                val a = groups[i]
+                m.rx[i] = a[0].coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
+                m.ry[i] = a[1].coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
                 m.vx[i] = a[2].coerceIn(VAR_MIN, VAR_MAX)
                 m.vy[i] = a[3].coerceIn(VAR_MIN, VAR_MAX)
                 m.n[i] = a[4].coerceIn(0f, COUNT_CAP)
             }
+            val g = groups[N]
+            m.gx = g[0].coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
+            m.gy = g[1].coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
+            m.gn = g[2].coerceIn(0f, SHARED_COUNT_CAP)
             return m
         }
 
@@ -406,14 +554,17 @@ class TouchModel(private val prior: Prior) {
             if (s == null || rowPitchPx <= 0f) return m
             val px = s.split(',').mapNotNull { it.toFloatOrNull() }
             if (px.isEmpty() || px.any { !it.isFinite() }) return m
+            val mx = FloatArray(N) { prior.meanX[it] }
+            val my = FloatArray(N) { prior.meanY[it] }
             for (i in 0 until LETTERS) {
                 val row = rowOfKey(i)
                 val v = px.getOrNull(row) ?: continue
-                m.my[i] = (-v / rowPitchPx).coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
+                my[i] = (-v / rowPitchPx).coerceIn(-MEAN_CLAMP, MEAN_CLAMP)
                 // Give it a history, or the first [syncUnseen] after the next layout treats the key as
                 // never used and puts the population prior straight back over what was carried across.
                 m.n[i] = CONFIDENCE_K
             }
+            m.splitCentres(mx, my)
             return m
         }
     }

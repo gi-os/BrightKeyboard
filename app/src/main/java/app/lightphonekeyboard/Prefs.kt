@@ -23,6 +23,7 @@ object Prefs {
     private const val KEY_TOUCH_MODEL = "touch_model"
     private const val KEY_TOUCH_MAP = "touch_map_"
     private const val KEY_TOUCH_OVERLAY = "touch_overlay"
+    private const val KEY_TOUCH_LEARNING = "touch_learning"
     private const val KEY_LANGUAGE = "language"
     private const val KEY_KB_WIDTH = "kb_width"
     private const val KEY_KB_ALIGN = "kb_align"
@@ -415,6 +416,12 @@ object Prefs {
     /** Draw the learned targets over the keys as you type. Off by default: it is there to be looked
      *  at deliberately, and a keyboard covered in diagnostics is not one you write messages on. */
     fun touchOverlay(c: Context): Boolean = prefs(c).getBoolean(KEY_TOUCH_OVERLAY, false)
+
+    /** How much the touch model may learn: "off", "gentle" (default) or "normal". See TouchModel.Learning. */
+    fun touchLearning(c: Context): String = prefs(c).getString(KEY_TOUCH_LEARNING, "gentle") ?: "gentle"
+
+    fun setTouchLearning(c: Context, v: String) =
+        prefs(c).edit().putString(KEY_TOUCH_LEARNING, v).apply()
 
     fun setTouchOverlay(c: Context, v: Boolean) =
         prefs(c).edit().putBoolean(KEY_TOUCH_OVERLAY, v).apply()

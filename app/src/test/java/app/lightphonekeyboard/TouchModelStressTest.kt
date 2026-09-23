@@ -187,10 +187,22 @@ class TouchModelStressTest {
     }
 
     @Test
-    fun `two keys on the same row can be learned differently`() {
+    fun `on Gentle, two keys on one row differ only a little`() {
+        val m = TouchModel(freshPrior())
+        val perKey = mapOf('q' to 0.34f, 'p' to -0.20f)
+        run(Board(m), 20000, Random(5), jitterX, jitterY, { k -> (perKey[k.ch] ?: 0f) * rowPitch })
+        val gap = m.meanY(li('q')) - m.meanY(li('p'))
+        println("[gentle q/p gap] $gap")
+        assertTrue("q should still sit below p: $gap", gap > 0.05f)
+        assertTrue("but no further apart than two corrections: $gap",
+            gap <= 2 * TouchModel.Learning.GENTLE.residual + 1e-3f)
+    }
+
+    @Test
+    fun `on Normal, two keys on the same row can be learned differently`() {
         // The whole of idea 1. The per-row model this replaced could not represent this at all: one
         // number per row cannot say that a thumb undershoots 'q' and overshoots 'p'.
-        val m = TouchModel(freshPrior())
+        val m = TouchModel(freshPrior()).apply { learning = TouchModel.Learning.NORMAL }
         val perKey = mapOf('q' to 0.34f, 'p' to -0.20f)
         run(Board(m), 20000, Random(5), jitterX, jitterY, { k -> (perKey[k.ch] ?: 0f) * rowPitch })
         assertTrue("q learned ${m.meanY(li('q'))}", abs(m.meanY(li('q')) - 0.34f) < 0.12f)
@@ -201,6 +213,7 @@ class TouchModelStressTest {
 
     @Test
     fun `a key hit sloppily widens and its neighbours do not`() {
+        // Gentle's spread band is 0.92-1.10, so "stands out" is measured against that.
         // Idea 2. 'g' gets a shaky finger; everything else is steady.
         val m = TouchModel(freshPrior())
         run(Board(m), 20000, Random(6), jitterX, jitterY, { 0f })
@@ -216,7 +229,7 @@ class TouchModelStressTest {
         }
         val steadyKeys = "qwertyuiopasdfhjklzxcvbnm".map { m2.sigmaY(li(it)) }
         assertTrue("the shaky key did not stand out: g=${m2.sigmaY(li('g'))}, " +
-            "steadiest others up to ${steadyKeys.max()}", m2.sigmaY(li('g')) > steadyKeys.max() * 1.15f)
+            "steadiest others up to ${steadyKeys.max()}", m2.sigmaY(li('g')) > steadyKeys.max() * 1.04f)
         // The spread is relative to this typist's own average, so a shaky key nudges every other
         // key's ratio down a little. What must hold is that the steady keys stay together — a spread
         // estimate noisy enough to scatter them is worse than no per-key spread at all.

@@ -83,8 +83,9 @@ jobs:
           # 4.3: a tap on a drawn control key types that key; the space bar's learned reach is capped.
           # 4.4: no autocorrect or completions in an address, email, password or filter field.
           # 4.5: a moved keyboard keeps within a bounded range, and narrowed keys are larger targets.
+          # 4.6: the touch model learns one shared miss plus small per-key corrections, and settles.
           # CI reads only major.minor from here, so this line is where a feature release is declared.
-          echo "name=4.5.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "name=4.6.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       # The typing logic (dictionary, autocorrect, swipe decoding) is pure Kotlin with no Android

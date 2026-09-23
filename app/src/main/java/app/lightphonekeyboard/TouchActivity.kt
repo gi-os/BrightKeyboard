@@ -106,6 +106,52 @@ class TouchActivity : AppCompatActivity() {
             },
         )
 
+        // How much it learns. Three chips, one lit, rather than a toggle: it is a choice of three.
+        root.addView(label(getString(R.string.touch_learning), 15f, R.color.white))
+        val levels = listOf(
+            "off" to R.string.touch_learning_off,
+            "gentle" to R.string.touch_learning_gentle,
+            "normal" to R.string.touch_learning_normal,
+        )
+        val levelChips = ArrayList<TextView>()
+        fun paintLevels() {
+            val cur = TouchModel.Learning.from(Prefs.touchLearning(this)).name.lowercase()
+            for ((j, c) in levelChips.withIndex()) {
+                val on = levels[j].first == cur
+                c.setTextColor(if (on) getColor(R.color.black) else getColor(R.color.white))
+                c.setBackgroundColor(if (on) getColor(R.color.white) else Color.TRANSPARENT)
+                c.alpha = if (on) 1f else 0.6f
+            }
+        }
+        root.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, pad / 3, 0, pad / 3)
+                val padH = (10 * resources.displayMetrics.density).toInt()
+                val padV = (5 * resources.displayMetrics.density).toInt()
+                for ((key, res) in levels) {
+                    val c = TextView(this@TouchActivity).apply {
+                        text = getString(res)
+                        textSize = 13f
+                        gravity = Gravity.CENTER
+                        setPadding(padH, padV, padH, padV)
+                        isClickable = true
+                        setOnClickListener {
+                            Prefs.setTouchLearning(this@TouchActivity, key)
+                            paintLevels()
+                            TouchInsight.refresh()
+                        }
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                            .apply { marginEnd = padV }
+                    }
+                    levelChips.add(c)
+                    addView(c)
+                }
+            },
+        )
+        paintLevels()
+        root.addView(label(getString(R.string.touch_learning_detail), 13f, R.color.gray))
+
         root.addView(label(getString(R.string.touch_legend), 13f, R.color.gray))
         summary = label("", 14f, R.color.gray)
         root.addView(summary)

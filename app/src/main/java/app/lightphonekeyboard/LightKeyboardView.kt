@@ -569,6 +569,7 @@ class LightKeyboardView @JvmOverloads constructor(
         autoPeriod = Prefs.autoPeriod(context)
         swipeTyping = Prefs.swipeTyping(context)
         touchOverlay = Prefs.touchOverlay(context)
+        touch.learning = TouchModel.Learning.from(Prefs.touchLearning(context))   // read on every field
         touchLayers = TouchOverlay.Layers.from(context)
         blankLetters = Prefs.blankLetters(context)
         haptics = Prefs.haptics(context)
@@ -3601,8 +3602,10 @@ class LightKeyboardView @JvmOverloads constructor(
             touchOverlay = Prefs.touchOverlay(context)
             touchLayers = TouchOverlay.Layers.from(context)
             blankLetters = Prefs.blankLetters(context)
+            touch.learning = TouchModel.Learning.from(Prefs.touchLearning(context))
             invalidate()
         }
+        touch.learning = TouchModel.Learning.from(Prefs.touchLearning(context))
         val saved = Prefs.touchModel(context)
         if (saved != null) {
             touch.copyFrom(TouchModel.parse(saved, touchPrior))

@@ -22,6 +22,9 @@ class TouchModelTest {
     private val E = 'e' - 'a'
     private val R = 'r' - 'a'
 
+    private fun normal(p: TouchModel.Prior = prior(meanY = 0f)) =
+        TouchModel(p).apply { learning = TouchModel.Learning.NORMAL }
+
     // ---------------------------------------------------------------- anchoring
 
     @Test
@@ -57,17 +60,91 @@ class TouchModelTest {
     @Test
     fun `a typist who lands low moves the key down to meet them`() {
         val m = TouchModel(prior(meanY = 0f))
-        repeat(60) { m.observe(E, 0f, 0.3f) }
+        repeat(60) { m.observe(E, 0f, 0.15f) }
         assertTrue("learned centre should approach the taps, got ${m.meanY(E)}",
-            abs(m.meanY(E) - 0.3f) < 0.02f)
+            abs(m.meanY(E) - 0.15f) < 0.02f)
         assertTrue("x was never wrong and must not move", abs(m.meanX(E)) < 0.01f)
     }
 
     @Test
-    fun `one key learning must not move another`() {
+    fun `gentle learning never moves a centre further than its shift`() {
         val m = TouchModel(prior(meanY = 0f))
-        repeat(60) { m.observe(E, 0f, 0.3f) }
-        assertEquals("r was never tapped", 0f, m.meanY(R), 1e-6f)
+        repeat(500) { m.observe(E, 0f, 0.3f) }
+        assertEquals("capped at the Gentle shift", TouchModel.Learning.GENTLE.shift, m.meanY(E), 1e-4f)
+        val n = normal()
+        repeat(500) { n.observe(E, 0f, 0.3f) }
+        assertEquals("Normal follows it the whole way", 0.3f, n.meanY(E), 0.02f)
+    }
+
+    @Test
+    fun `a miss every key shares is learned by every key, tapped or not`() {
+        val m = TouchModel(prior(meanY = 0f))
+        val some = "asdfghjkl".map { it - 'a' }
+        repeat(60) { for (i in some) m.observe(i, -0.1f, 0.12f) }
+        assertEquals("r was never tapped and should still have the shared miss",
+            0.12f, m.meanY(R), 0.02f)
+        assertEquals("sideways too", -0.1f, m.meanX(R), 0.02f)
+    }
+
+    @Test
+    fun `one key's quirk stays small and stays its own`() {
+        val m = TouchModel(prior(meanY = 0f))
+        repeat(400) {
+            for (c in "qwrtyuiopasdfghjklzxcvbnm") m.observe(c - 'a', 0f, 0f)
+            m.observe(E, 0.3f, 0f)                       // e alone is always hit to the right
+        }
+        assertTrue("e's own lean is bounded by the residual: ${m.meanX(E)}",
+            m.meanX(E) <= TouchModel.Learning.GENTLE.residual + 0.02f && m.meanX(E) > 0.05f)
+        assertTrue("and r did not inherit it: ${m.meanX(R)}", abs(m.meanX(R)) < 0.02f)
+    }
+
+    @Test
+    fun `a settled key barely moves, where it used to wander`() {
+        fun moved(m: TouchModel): Float {
+            repeat(600) { m.observe(E, 0f, 0.05f) }
+            val settled = m.meanY(E)
+            repeat(40) { m.observe(E, 0f, 0.25f) }       // a bad afternoon
+            return abs(m.meanY(E) - settled)
+        }
+        val gentle = moved(TouchModel(prior(meanY = 0f)))
+        val loose = moved(normal())
+        println("[settled key] 40 odd taps moved gentle $gentle, normal $loose")
+        // The worst case on purpose: forty taps in a row, all on one key, all a fifth of a key off.
+        assertTrue("gentle moved $gentle", gentle < 0.06f)
+        assertTrue("normal should be far looser: $loose vs $gentle", loose > 2.5f * gentle)
+    }
+
+    @Test
+    fun `off uses none of what was learned and keeps all of it`() {
+        val p = prior(meanY = 0.2f)
+        val m = TouchModel(p)
+        repeat(200) { m.observe(E, 0.1f, 0.3f) }
+        val learned = m.meanY(E)
+        m.learning = TouchModel.Learning.OFF
+        assertEquals("off reads the prior", 0.2f, m.meanY(E), 1e-6f)
+        assertEquals("and the prior spread", p.sx, m.sigmaX(E), 1e-6f)
+        assertFalse("and learns nothing", m.observe(E, 0f, 0f))
+        m.hold(R, 0f, 0.3f); m.flush()
+        assertEquals(0f, m.count(R), 1e-6f)
+        m.learning = TouchModel.Learning.GENTLE
+        assertEquals("switching back restores it", learned, m.meanY(E), 1e-6f)
+    }
+
+    @Test
+    fun `a v4 model carries over as a shared offset plus corrections`() {
+        val p = prior(meanY = 0.1f)
+        // Every letter learned 0.15 low, and e a little further.
+        val g = Array(TouchModel.N) { i ->
+            if (i < TouchModel.LETTERS) floatArrayOf(0f, 0.25f, 0.4f, 0.4f, 100f)
+            else floatArrayOf(0f, 0.1f, 0.4f, 0.4f, 0f)
+        }
+        g[E] = floatArrayOf(0f, 0.30f, 0.4f, 0.4f, 100f)
+        val m = TouchModel.parse("v4;" + g.joinToString(";") { it.joinToString(",") }, p)
+        assertEquals("the shared miss", 0.152f, m.sharedY(), 0.005f)
+        assertEquals("r keeps its centre", 0.25f, m.meanY(R), 0.005f)
+        assertEquals("e keeps its centre", 0.30f, m.meanY(E), 0.005f)
+        val back = TouchModel.parse(m.serialize(), p)
+        assertEquals("and the new format keeps both", m.meanY(E), back.meanY(E), 1e-3f)
     }
 
     @Test
@@ -151,7 +228,8 @@ class TouchModelTest {
     private fun crafted(vararg spec: Pair<Int, FloatArray>): TouchModel {
         val g = Array(TouchModel.N) { floatArrayOf(0f, 0f, 0.5184f, 0.5184f, 500f) }
         for ((i, a) in spec) g[i] = a
-        return TouchModel.parse(TouchModel.VERSION + ";" + g.joinToString(";") { it.joinToString(",") }, prior())
+        return TouchModel.parse(TouchModel.VERSION + ";" + g.joinToString(";") { it.joinToString(",") } +
+            ";0,0,0,0,0", prior())
     }
 
     @Test
@@ -242,9 +320,9 @@ class TouchModelTest {
     @Test
     fun `the big keys are learned like any other`() {
         val m = TouchModel(prior(meanY = 0f))
-        repeat(80) { m.observe(TouchModel.SLOT_SPACE, 0f, 0.28f) }
+        repeat(80) { m.observe(TouchModel.SLOT_SPACE, 0f, 0.15f) }
         assertTrue("space did not follow the taps: ${m.meanY(TouchModel.SLOT_SPACE)}",
-            abs(m.meanY(TouchModel.SLOT_SPACE) - 0.28f) < 0.03f)
+            abs(m.meanY(TouchModel.SLOT_SPACE) - 0.15f) < 0.03f)
         assertEquals("and it must not have moved a letter", 0f, m.meanY(E), 1e-6f)
     }
 
@@ -252,7 +330,8 @@ class TouchModelTest {
     fun `a corrupt saved model cannot load an absurd key`() {
         val g = Array(TouchModel.N) { floatArrayOf(0f, 0f, 0.5184f, 0.5184f, 500f) }
         g[E] = floatArrayOf(9f, -9f, 99f, 0.0001f, 9e9f)
-        val m = TouchModel.parse(TouchModel.VERSION + ";" + g.joinToString(";") { it.joinToString(",") }, prior())
+        val m = TouchModel.parse("v4;" + g.joinToString(";") { it.joinToString(",") }, prior())
+        m.learning = TouchModel.Learning.NORMAL
         assertTrue("mean", abs(m.meanX(E)) <= TouchModel.MEAN_CLAMP + 1e-4f)
         assertTrue("spread", m.sigmaX(E) <= 1f + 1e-3f)
         assertTrue("spread floor", m.sigmaY(E) >= 0.35f - 1e-3f)
@@ -268,9 +347,14 @@ class TouchModelTest {
             val c = 'a' + i
             if (c in rows.first) 0 else if (c in rows.second) 1 else 2
         }
-        assertEquals("q is on the top row", 0.25f, m.meanY('q' - 'a'), 1e-4f)
-        assertEquals("a is on the middle row", 0.20f, m.meanY('a' - 'a'), 1e-4f)
-        assertEquals("z is on the bottom row", 0.15f, m.meanY('z' - 'a'), 1e-4f)
+        m.learning = TouchModel.Learning.NORMAL   // 0.25 is past Gentle's shift; the data is all there
+        // Within a few hundredths, not exactly: a carried-over key has CONFIDENCE_K taps behind it, so
+        // half of its difference from the shared offset is trusted until it earns the rest.
+        assertEquals("q is on the top row", 0.25f, m.meanY('q' - 'a'), 0.03f)
+        assertEquals("a is on the middle row", 0.20f, m.meanY('a' - 'a'), 0.03f)
+        assertEquals("z is on the bottom row", 0.15f, m.meanY('z' - 'a'), 0.03f)
+        assertTrue("and in that order", m.meanY('q' - 'a') > m.meanY('a' - 'a') &&
+            m.meanY('a' - 'a') > m.meanY('z' - 'a'))
         assertEquals("v1 knew nothing about x", 0f, m.meanX(E), 1e-6f)
     }
 
@@ -281,8 +365,9 @@ class TouchModelTest {
             if ('a' + i in "qwertyuiop") 0 else if ('a' + i in "asdfghjkl") 1 else 2
         }
         m.syncUnseen()
+        m.learning = TouchModel.Learning.NORMAL
         assertEquals("syncUnseen put the population prior back over the carried-over model",
-            0.25f, m.meanY('q' - 'a'), 1e-4f)
+            0.25f, m.meanY('q' - 'a'), 0.03f)
     }
 
     @Test
@@ -294,17 +379,19 @@ class TouchModelTest {
     }
 
     @Test
-    fun `a layout change reaches the keys with no history and no others`() {
+    fun `a layout change moves the starting point and keeps what was learned`() {
         val p = prior(meanY = 0.2f)
         val m = TouchModel(p)
-        repeat(60) { m.hold(E, 0f, 0.35f) }
+        repeat(60) { m.hold(E, 0f, 0.3f) }
         m.flush()
-        val learned = m.meanY(E)
+        val learned = m.meanY(E) - p.meanY[E]
+        assertTrue("something was learned", learned > 0.05f)
         p.meanY[E] = 0.05f; p.meanY[R] = 0.05f; p.sx = 0.4f
         m.syncUnseen()
-        assertEquals("a key with evidence must ignore the new prior", learned, m.meanY(E), 1e-6f)
-        assertEquals("a key with none must follow it", 0.05f, m.meanY(R), 1e-6f)
-        assertEquals("and take its spread too", 0.4f, m.sigmaX(R), 1e-4f)
+        assertEquals("the learning must survive the new prior", learned, m.meanY(E) - 0.05f, 1e-5f)
+        assertEquals("and a key with no history gets the new start plus the shared miss",
+            0.05f + m.sharedY(), m.meanY(R), 1e-5f)
+        assertEquals("and the new spread", 0.4f, m.sigmaX(R), 1e-4f)
     }
 
     // ---------------------------------------------------------------- which taps are evidence
@@ -385,14 +472,16 @@ class TouchModelTest {
         // real evidence about how wide that key's target is. Under the obvious "spatially resolved
         // only" signal none of these would ever have been seen, because a tap stops resolving to a
         // key as soon as it is nearer another one, and the spread could not widen at all.
+        // Past the Gentle gate, so they move no centre, but inside a whole key, so the spread sees them.
         val m = TouchModel(prior(meanY = 0f, sx = 0.5f))
         repeat(3000) { i ->
             m.hold(R, 0f, 0f)                                    // steady
             m.hold(E, if (i % 2 == 0) 0.85f else -0.85f, 0f)     // dragged wide, accepted
         }
         m.flush()
-        assertTrue("the far taps taught the key nothing: ${m.sigmaX(E)} vs ${m.sigmaX(R)}",
-            m.sigmaX(E) > 1.3f * m.sigmaX(R))
+        val top = 0.5f * TouchModel.Learning.GENTLE.spreadMax
+        assertEquals("the far taps should have taken e to the top of its band", top, m.sigmaX(E), 1e-3f)
+        assertTrue(m.sigmaX(E) > m.sigmaX(R))
     }
 
     @Test
